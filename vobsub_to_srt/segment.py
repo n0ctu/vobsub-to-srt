@@ -12,30 +12,52 @@ from .vobsub import Cue
 _EIGHT = np.ones((3, 3), dtype=bool)
 
 
+PURITY = 0.9          # share of a text colour's foreign neighbours that are of one single kind
+MAX_DENSITY = 0.5     # a colour filling more of its bounding box than this is a backdrop, not text
+MIN_SHARE = 0.1       # colours smaller than this fraction of the largest text colour are leftovers
+
+
 def fill_mask(cue: Cue) -> np.ndarray:
-    """Subtitle Edit's VobSubColorIsolation: the glyph fill is the opaque colour whose
-    pixels have the lowest share of edges facing transparent/other-colour pixels."""
+    """The text pixels of a cue, as a mask cropped to the ink.
+
+    A VobSub cue has up to four palette colours: background, fill, and usually an anti-alias ring
+    and an outline. Only the fill is text. It is told apart by its neighbourhood: the fill touches
+    one single other kind of pixel (the ring, the outline or transparency), while a ring or an
+    outline always sits between two kinds and so has mixed neighbours. A backdrop box fills its
+    bounding box, which text never does. Every colour that qualifies is kept, so cues with two text
+    colours (speaker colours) are read whole. Verified identical to Subtitle Edit's colour
+    isolation on the reference set, and correct on the layouts that isolation gets wrong."""
     img = cue.image
-    best, best_score = None, None
-    padded = np.pad(img, 1, constant_values=255)
-    opaque = np.isin(padded, [u for u in range(4) if cue.alpha[u] >= 8])
-    for v in range(4):
-        if cue.alpha[v] < 8:
-            continue
+    if img.size == 0:
+        return np.zeros((0, 0), bool)
+    h, w = img.shape
+    padded = np.pad(img, 1, constant_values=4)                  # 4 = image border
+    opaque = [u for u in range(4) if cue.alpha[u] >= 8]
+    stats: dict[int, tuple[int, float, float]] = {}            # colour -> (count, purity, density)
+    for v in opaque:
         m = img == v
         n = int(m.sum())
         if n == 0:
             continue
-        sides = 0
+        hist = np.zeros(5, np.int64)                            # neighbour kinds: 0 transparent, 1-3, 4 border
         for dy, dx in ((0, 1), (2, 1), (1, 0), (1, 2)):
-            nb = opaque[dy:dy + img.shape[0], dx:dx + img.shape[1]]
-            sides += int((m & ~nb).sum())
-        score = (sides + 1) / (n + 2)
-        if best_score is None or score < best_score:
-            best, best_score = v, score
-    if best is None:
+            nb = padded[dy:dy + h, dx:dx + w]
+            nb = nb[m & (nb != v)]
+            nb = np.where(np.isin(nb, opaque) | (nb == 4), nb, 0)
+            hist += np.bincount(nb, minlength=5)
+        rows, cols = np.nonzero(m.any(axis=1))[0], np.nonzero(m.any(axis=0))[0]
+        bbox = (rows[-1] - rows[0] + 1) * (cols[-1] - cols[0] + 1)
+        stats[v] = (n, hist.max() / max(hist.sum(), 1), n / bbox)
+    if not stats:
         return np.zeros((0, 0), bool)
-    return crop(img == best)
+    cand = {v: s for v, s in stats.items() if s[2] < MAX_DENSITY} or stats
+    text = {v: s for v, s in cand.items() if s[1] >= PURITY}
+    if not text:
+        best = max(cand, key=lambda v: cand[v][1])
+        text = {best: cand[best]}
+    largest = max(s[0] for s in text.values())
+    keep = [v for v, s in text.items() if s[0] >= MIN_SHARE * largest]
+    return crop(np.isin(img, keep))
 
 
 def crop(mask: np.ndarray) -> np.ndarray:
