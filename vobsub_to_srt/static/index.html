@@ -48,14 +48,14 @@
       <span class="text-zinc-600 dark:text-zinc-300">Drop the <b>.idx</b> and <b>.sub</b> here, or click to choose</span>
     </label>
     <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-      <div id="slot-idx" class="flex items-center gap-2 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+      <div id="slot-idx" class="flex min-w-0 items-center gap-2 overflow-hidden rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true" class="shrink-0"><path d="M8.5 5.6a.5.5 0 1 0-1 0v2.9h-3a.5.5 0 0 0 0 1H8a.5.5 0 0 0 .5-.5z"/><path d="M6.5 1A.5.5 0 0 1 7 .5h2a.5.5 0 0 1 0 1v.57c1.36.196 2.594.78 3.584 1.64l.012-.013.354-.354-.354-.353a.5.5 0 0 1 .707-.708l1.414 1.415a.5.5 0 1 1-.707.707l-.353-.354-.354.354-.013.012A7 7 0 1 1 7 2.071V1.5a.5.5 0 0 1-.5-.5M8 3a6 6 0 1 0 .001 12A6 6 0 0 0 8 3"/></svg>
-        <span class="name min-w-0 flex-1 truncate text-zinc-400 dark:text-zinc-500">timing index</span>
+        <span class="name min-w-0 flex-1 overflow-hidden whitespace-nowrap text-zinc-400 dark:text-zinc-500">timing index</span>
         <span class="shrink-0 font-mono text-xs text-zinc-500">.idx</span>
       </div>
-      <div id="slot-sub" class="flex items-center gap-2 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+      <div id="slot-sub" class="flex min-w-0 items-center gap-2 overflow-hidden rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true" class="shrink-0"><path d="M6.002 5.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0"/><path d="M2.002 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2zm12 1a1 1 0 0 1 1 1v6.5l-3.777-1.947a.5.5 0 0 0-.577.093l-3.71 3.71-2.66-1.772a.5.5 0 0 0-.63.062L1.002 12V3a1 1 0 0 1 1-1z"/></svg>
-        <span class="name min-w-0 flex-1 truncate text-zinc-400 dark:text-zinc-500">subtitle bitmaps</span>
+        <span class="name min-w-0 flex-1 overflow-hidden whitespace-nowrap text-zinc-400 dark:text-zinc-500">subtitle bitmaps</span>
         <span class="shrink-0 font-mono text-xs text-zinc-500">.sub</span>
       </div>
     </div>
@@ -203,8 +203,10 @@ const RED = ['border-red-400', 'text-red-600', 'dark:border-red-500', 'dark:text
 function slots() {
   for (const [id, file, empty] of [['#slot-idx', idx, 'timing index'], ['#slot-sub', sub, 'subtitle bitmaps']]) {
     const el = $(id), name = el.querySelector('.name');
-    name.textContent = file ? file.name : empty;
+    name.textContent = file ? file.name.replace(/\.(idx|sub)$/i, '') : empty;
     name.classList.toggle('text-zinc-400', !file); name.classList.toggle('dark:text-zinc-500', !file);
+    // long names: no ellipsis, fade out towards the right instead
+    name.classList.toggle('fade-r', name.scrollWidth > name.clientWidth);
     const missing = !file && (idx || sub);            // one file chosen, this one still missing
     RED.forEach(c => el.classList.toggle(c, !!missing));
   }
