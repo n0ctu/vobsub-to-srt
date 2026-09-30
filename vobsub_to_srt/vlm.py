@@ -25,12 +25,10 @@ LANG_NAMES = {"en": "English", "de": "German", "fr": "French", "es": "Spanish", 
 
 
 ENV_KEYS = ("VLM_BASE_URL", "VLM_API_KEY", "VLM_MODEL")
-_LEGACY = {"VLM_BASE_URL": "DEEPSEEK_BASE_URL", "VLM_API_KEY": "DEEPSEEK_API_KEY", "VLM_MODEL": "DEEPSEEK_MODEL"}
 
 
 def env(key: str) -> str | None:
-    """VLM_* setting, falling back to the older DEEPSEEK_* name."""
-    return os.environ.get(key) or os.environ.get(_LEGACY.get(key, key))
+    return os.environ.get(key) or None
 
 
 def endpoint_configured() -> bool:
