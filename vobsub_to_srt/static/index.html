@@ -50,12 +50,12 @@
     <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
       <div id="slot-idx" class="flex min-w-0 items-center gap-2 overflow-hidden rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true" class="shrink-0"><path d="M8.5 5.6a.5.5 0 1 0-1 0v2.9h-3a.5.5 0 0 0 0 1H8a.5.5 0 0 0 .5-.5z"/><path d="M6.5 1A.5.5 0 0 1 7 .5h2a.5.5 0 0 1 0 1v.57c1.36.196 2.594.78 3.584 1.64l.012-.013.354-.354-.354-.353a.5.5 0 0 1 .707-.708l1.414 1.415a.5.5 0 1 1-.707.707l-.353-.354-.354.354-.013.012A7 7 0 1 1 7 2.071V1.5a.5.5 0 0 1-.5-.5M8 3a6 6 0 1 0 .001 12A6 6 0 0 0 8 3"/></svg>
-        <span class="name min-w-0 flex-1 overflow-hidden whitespace-nowrap text-zinc-400 dark:text-zinc-500">timing index</span>
+        <span class="name flex min-w-0 flex-1 overflow-hidden whitespace-nowrap text-zinc-400 dark:text-zinc-500">timing index</span>
         <span class="shrink-0 font-mono text-xs text-zinc-500">.idx</span>
       </div>
       <div id="slot-sub" class="flex min-w-0 items-center gap-2 overflow-hidden rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true" class="shrink-0"><path d="M6.002 5.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0"/><path d="M2.002 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2zm12 1a1 1 0 0 1 1 1v6.5l-3.777-1.947a.5.5 0 0 0-.577.093l-3.71 3.71-2.66-1.772a.5.5 0 0 0-.63.062L1.002 12V3a1 1 0 0 1 1-1z"/></svg>
-        <span class="name min-w-0 flex-1 overflow-hidden whitespace-nowrap text-zinc-400 dark:text-zinc-500">subtitle bitmaps</span>
+        <span class="name flex min-w-0 flex-1 overflow-hidden whitespace-nowrap text-zinc-400 dark:text-zinc-500">subtitle bitmaps</span>
         <span class="shrink-0 font-mono text-xs text-zinc-500">.sub</span>
       </div>
     </div>
@@ -200,13 +200,21 @@ function pick(list) {
   $('#go').disabled = !(idx && sub);
 }
 const RED = ['border-red-400', 'text-red-600', 'dark:border-red-500', 'dark:text-red-400'];
+/* Long names are shortened in the middle: the end of a name is what tells tracks of the same video
+   apart (language, "forced", ...), so the last characters always stay visible. `el` must be a flex box. */
+function midName(el, text, keep = 16) {
+  el.textContent = ''; el.title = text;
+  const head = document.createElement('span'), tail = document.createElement('span');
+  if (text.length <= keep + 8) { head.className = 'truncate'; head.textContent = text; el.appendChild(head); return; }
+  head.className = 'min-w-0 truncate'; head.textContent = text.slice(0, -keep);
+  tail.className = 'shrink-0'; tail.textContent = text.slice(-keep);
+  el.append(head, tail);
+}
 function slots() {
   for (const [id, file, empty] of [['#slot-idx', idx, 'timing index'], ['#slot-sub', sub, 'subtitle bitmaps']]) {
     const el = $(id), name = el.querySelector('.name');
-    name.textContent = file ? file.name.replace(/\.(idx|sub)$/i, '') : empty;
+    midName(name, file ? file.name.replace(/\.(idx|sub)$/i, '') : empty);
     name.classList.toggle('text-zinc-400', !file); name.classList.toggle('dark:text-zinc-500', !file);
-    // long names: no ellipsis, fade out towards the right instead
-    name.classList.toggle('fade-r', name.scrollWidth > name.clientWidth);
     const missing = !file && (idx || sub);            // one file chosen, this one still missing
     RED.forEach(c => el.classList.toggle(c, !!missing));
   }
@@ -261,10 +269,10 @@ function renderQueue() {
     if ((job.status === 'rejected' || job.status === 'error') && job.error) detail = job.error;
     if (job.status === 'done' && job.stored === false) detail += ' - browser storage full, download now';
     row.innerHTML = `<span class="h-2.5 w-2.5 shrink-0 rounded-full ${DOT[kind] || DOT.pending}"></span>
-      <span class="min-w-0 flex-1"><span class="block truncate font-medium"></span>
+      <span class="min-w-0 flex-1"><span class="flex font-medium"></span>
         <span class="block truncate text-xs text-zinc-500">${job.cues ? job.cues + ' cues - ' : ''}${detail} - ${ago(job.created)}</span></span>
       <span class="flex shrink-0 gap-1"></span>`;
-    row.children[1].children[0].textContent = job.stem;
+    midName(row.children[1].children[0], job.stem);
     const btns = row.children[2];
     const mk = (icon, title, cls, fn) => { const b = document.createElement('button'); b.type = 'button'; b.title = title; b.className = 'rounded p-1 ' + cls; b.innerHTML = ICON[icon]; b.addEventListener('click', e => { e.stopPropagation(); fn(); }); btns.appendChild(b); };
     if ((job.status === 'rejected' || job.status === 'error') && pendingFiles[job.id]) mk('retry', 'Retry', 'text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-700', () => { job.status = 'pending'; job.error = null; saveJobs(); renderQueue(); pump(); });
@@ -485,9 +493,31 @@ function summarize(e) {
 }
 
 /* ---------- runner: one job at a time ---------- */
-$('#go').addEventListener('click', () => {
+/* Fingerprint of a pair: SHA-256 of both files, so the same subtitle is recognised under any name.
+   Without WebCrypto (plain http on a LAN address) the names and sizes have to do. */
+async function fingerprint(idx, sub) {
+  try {
+    if (crypto.subtle) {
+      const [a, b] = await Promise.all([idx.arrayBuffer(), sub.arrayBuffer()]);
+      const buf = new Uint8Array(a.byteLength + b.byteLength); buf.set(new Uint8Array(a)); buf.set(new Uint8Array(b), a.byteLength);
+      return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', buf)), x => x.toString(16).padStart(2, '0')).join('');
+    }
+  } catch (e) {}
+  return `n:${idx.name}|${idx.size}|${sub.name}|${sub.size}`;
+}
+$('#go').addEventListener('click', async () => {
+  if (!(idx && sub)) return;
+  $('#go').disabled = true;                              // while the files are being hashed
+  const hash = await fingerprint(idx, sub);
+  const dup = [...jobs].reverse().find(j => j.hash === hash);
+  if (dup) {
+    const what = dup.status === 'done' ? `converted ${ago(dup.created)}` : STATUS[dup.status] || dup.status;
+    if (!confirm(`This subtitle is already in your list as "${dup.stem}" (${what}). Convert it again anyway?`)) {
+      idx = sub = null; slots(); select(dup.id); return;
+    }
+  }
   const job = { id: 'j' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), stem: idx.name.replace(/\.idx$/i, ''),
-                cues: 0, created: Date.now(), status: 'pending', serverId: null, summary: null, error: null };
+                cues: 0, created: Date.now(), status: 'pending', serverId: null, summary: null, error: null, hash };
   pendingFiles[job.id] = { idx, sub };
   jobs.push(job); saveJobs(); newState(job);
   idx = sub = null; slots(); $('#go').disabled = true;
