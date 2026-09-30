@@ -245,7 +245,7 @@ let selectedId = null;
 
 function newState(job) {
   return live[job.id] = { log: [], cues: new Map(), glyphs: new Map(), start: 0,
-    prog: { total: job.cues || 0, resolved: 0, vlmUsed: 0, vlmBudget: null, phase: 'queued' }, summary: null };
+    prog: { total: job.cues || 0, resolved: 0, vlmUsed: 0, vlmBudget: null, phase: 'queued', round: 0 }, lastEvent: 0, summary: null };
 }
 
 /* ---------- queue list ---------- */
@@ -402,7 +402,11 @@ function applyProgress(st, e) {
   if (e.event === 'queued') p.phase = e.position > 1 ? `queued at position ${e.position}` : 'queued';
   if (e.event === 'started') p.phase = 'starting';
   if (e.event === 'probe') p.phase = e.mode === 'exact' ? 'reading from memory' : 'learning the glyph set';
-  if (e.event === 'round') p.phase = `round ${e.round}: ${e.unresolved} cues still unresolved`;
+  if (e.event === 'round') { p.round = e.round; p.phase = `round ${e.round}: ${e.unresolved} cues still unresolved`; }
+  if (e.event === 'vlm') {
+    const what = { training: 'learning', inference: 'reading', requery: 're-asking', retry: 'retrying' }[e.phase] || e.phase;
+    p.phase = (p.round ? `round ${p.round} (${what}): ` : `${what}: `) + `vision model answered ${e.answered} of ${e.batch}`;
+  }
   if (e.event === 'done') { p.phase = 'done'; p.resolved = p.total; }
   if (e.event === 'error') p.phase = 'failed';
 }
@@ -413,8 +417,15 @@ function paintProgress(st, job) {
   fill.classList.toggle('bg-emerald-500', done); fill.classList.toggle('bg-sky-500', !done);
   const secs = done && job.summary && job.summary.seconds ? job.summary.seconds : st.start ? Math.round((Date.now() - st.start) / 1000) : 0;
   $('#pleft').textContent = `${done ? p.total : p.resolved} / ${p.total} cues (${pct}%) - ${done ? 'done' : p.phase}`;
-  $('#pright').textContent = (p.vlmBudget ? `${p.vlmUsed} / ${p.vlmBudget} vision requests - ` : p.vlmUsed ? `${p.vlmUsed} vision requests - ` : '') + `${secs}s`;
+  const quiet = !done && st.lastEvent ? Math.round((Date.now() - st.lastEvent) / 1000) : 0;
+  $('#pright').textContent = (p.vlmBudget ? `${p.vlmUsed} / ${p.vlmBudget} vision requests - ` : p.vlmUsed ? `${p.vlmUsed} vision requests - ` : '')
+    + `${secs}s` + (quiet >= 30 ? ` (no update for ${quiet}s)` : '');
 }
+// the clock keeps counting between server events, so a slow vision round never looks like a crash
+setInterval(() => {
+  const job = jobs.find(j => j.id === selectedId);
+  if (job && (job.status === 'running' || job.status === 'queued') && live[job.id]) paintProgress(live[job.id], job);
+}, 1000);
 
 /* ---------- transcript ---------- */
 const rows = new Map();
@@ -557,7 +568,8 @@ function attach(job) {
   es.onerror = () => { es.close(); st.es = null; setTimeout(() => resumeOne(job), 3000); };   // reconnect via status check
 }
 async function handleEvent(job, st, e) {
-  const vis = selectedId === job.id;
+  const vis = selectedId === job.id; st.lastEvent = Date.now();
+  if (e.event === 'vlm') { applyProgress(st, e); if (vis) paintProgress(st, job); return; }   // progress only, no log line
   if (e.event === 'cues') { for (const c of e.items) st.cues.set(c.i, c); applyProgress(st, e); if (vis) { transcriptAdd(e.items); paintProgress(st, job); } return; }
   if (e.event === 'glyphs') { for (const g of e.items) st.glyphs.set(g.key, g); st.pending = e.pending; if (vis) glyphAdd(e.items, e.known, e.pending); return; }
   say(st, describe(e), vis); applyProgress(st, e);

@@ -250,6 +250,12 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
             opts.progress({"event": event, "file": idx_path.name, "cues": len(states),
                            "vlm_used": budget["used"], "vlm_budget": opts.max_vlm_cues, **data})
 
+    def hooks(phase: str) -> dict:
+        """Progress callbacks for a VLM batch: one small event per answered request, and the
+        newly resolved cues / learned glyphs after every applied answer."""
+        return {"on_progress": lambda k, n: emit("vlm", phase=phase, answered=k, batch=n),
+                "on_apply": lambda: (flush_cues(), flush_glyphs())}
+
     db, cov, probe_mode = probe(opts.db_dir, keyfreq, sample_glyph, opts.min_probe_coverage, charset)
     log.info("using DB %s (%s, coverage %.1f%%)", db.path.name if db.path else db.name, probe_mode, 100 * cov)
     emit("probe", db=db.name, mode=probe_mode, coverage=round(cov, 4))
@@ -385,10 +391,11 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
                 st.requeried = True
             if todo:
                 log.info("re-asking %d cues whose VLM text misfits or contradicts the glyphs", len(todo))
-                await _vlm_batch(todo, lambda s_: vlm_cue(s_, strict=True), apply_vlm, failures, "vlm-strict")
+                await _vlm_batch(todo, lambda s_: vlm_cue(s_, strict=True), apply_vlm, failures, "vlm-strict",
+                                 **hooks("requery"))
 
     if opts.mode == "vlm-only":
-        await _vlm_batch(states, vlm_cue, apply_vlm, failures, "vlm")
+        await _vlm_batch(states, vlm_cue, apply_vlm, failures, "vlm", **hooks("inference"))
     else:
         rounds = 0
         for recheck in range(4):
@@ -426,7 +433,7 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
                 emit("round", round=rounds, phase=phase, unresolved=len(unresolved), batch=len(batch))
                 log.info("round %d [%s]: %d unresolved cues, unknown glyphs %.2f%% -> VLM on %d cues",
                          rounds, phase, len(unresolved), 100 * unk_share, len(batch))
-                await _vlm_batch(batch, vlm_cue, apply_vlm, failures, "vlm")
+                await _vlm_batch(batch, vlm_cue, apply_vlm, failures, "vlm", **hooks(phase))
                 await requery_misfits()
                 flush_cues()
                 flush_glyphs()
@@ -461,7 +468,7 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
         emit("retry", cues=len(retry))
         log.info("retrying %d failed cues with strict prompt / 3x scale", len(retry))
         still: dict[int, str] = {}
-        await _vlm_batch(retry, lambda s: vlm_cue(s, strict=True), apply_vlm, still, "vlm-retry")
+        await _vlm_batch(retry, lambda s: vlm_cue(s, strict=True), apply_vlm, still, "vlm-retry", **hooks("retry"))
         for st in retry:
             if st.cue.index not in still:
                 failures.pop(st.cue.index, None)
@@ -569,12 +576,33 @@ def _select_batch(db: GlyphDB, unresolved: list[CueState], keyfreq: Counter, siz
     return batch
 
 
-async def _vlm_batch(batch, call, apply, failures: dict[int, str], source: str) -> None:
-    results = await asyncio.gather(*(call(st) for st in batch), return_exceptions=True)
-    for st, r in zip(batch, results):
-        if isinstance(r, BaseException):
-            failures[st.cue.index] = f"{type(r).__name__}: {r}"
-            log.warning("cue %d @%s: VLM failed: %s", st.cue.index, fmt_ts(st.cue.start_ms), r)
-        else:
-            failures.pop(st.cue.index, None)
-            apply(st, r, source)
+async def _vlm_batch(batch, call, apply, failures: dict[int, str], source: str,
+                     on_progress=None, on_apply=None) -> None:
+    """Ask the VLM about every cue of the batch concurrently and apply the answers in batch order.
+
+    The order matters: applying learns into the glyph memory, and applying in a fixed order is what
+    keeps re-runs deterministic. Answers are still applied as early as possible (each one as soon as
+    it and all its predecessors are in), so callers can stream progress: `on_progress(k, n)` runs
+    when k of n requests have been answered, `on_apply()` after each applied answer."""
+    tasks = [asyncio.ensure_future(call(st)) for st in batch]
+    answered = 0
+
+    def _done(_task) -> None:
+        nonlocal answered
+        answered += 1
+        if on_progress:
+            on_progress(answered, len(tasks))
+
+    for t in tasks:
+        t.add_done_callback(_done)
+    for st, t in zip(batch, tasks):
+        try:
+            r = await t
+        except Exception as e:  # noqa: BLE001
+            failures[st.cue.index] = f"{type(e).__name__}: {e}"
+            log.warning("cue %d @%s: VLM failed: %s", st.cue.index, fmt_ts(st.cue.start_ms), e)
+            continue
+        failures.pop(st.cue.index, None)
+        apply(st, r, source)
+        if on_apply:
+            on_apply()
