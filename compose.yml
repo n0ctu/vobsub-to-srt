@@ -13,7 +13,7 @@ services:
       VTS_DATA: /data
       VTS_TRUST_PROXY: "1"          # behind a reverse proxy that sets X-Forwarded-For
     ports:
-      - "127.0.0.1:8080:8000"       # change 127.0.0.1 to the private IP your reverse proxy reaches
+      - "127.0.0.1:8787:8000"       # change 127.0.0.1 to the private IP your reverse proxy reaches
     volumes:
       - ./data:/data
     labels:

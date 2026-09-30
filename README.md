@@ -148,7 +148,7 @@ Reverse proxy (nginx on another host, TLS terminated there):
 
 ```nginx
 location / {
-    proxy_pass http://10.0.0.5:8080;            # the private address bound in compose.yml
+    proxy_pass http://10.0.0.5:8787;            # the private address bound in compose.yml
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header Host $host;
     client_max_body_size 80m;                   # a .sub is 5-10 MB per track
