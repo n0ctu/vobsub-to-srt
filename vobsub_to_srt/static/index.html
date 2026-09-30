@@ -234,7 +234,7 @@ function forgetResult(id) { try { ['srt', 'src', 'rep'].forEach(k => localStorag
 let jobs = loadJobs();                 // persisted records
 const live = {};                       // per-job in-memory state for this page session
 const pendingFiles = {};               // id -> {idx, sub} (File objects cannot be persisted)
-let selectedId = null, pinned = false;
+let selectedId = null;
 
 function newState(job) {
   return live[job.id] = { log: [], cues: new Map(), glyphs: new Map(), start: 0,
@@ -270,7 +270,7 @@ function renderQueue() {
     if ((job.status === 'rejected' || job.status === 'error') && pendingFiles[job.id]) mk('retry', 'Retry', 'text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-700', () => { job.status = 'pending'; job.error = null; saveJobs(); renderQueue(); pump(); });
     if (job.status === 'done') mk('download', 'Download SRT', 'text-sky-700 hover:bg-sky-100 dark:text-sky-400 dark:hover:bg-sky-900/40', () => download(job));
     mk('trash', 'Delete from this browser', 'text-zinc-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40', () => remove(job));
-    row.addEventListener('click', () => { pinned = true; select(job.id); });
+    row.addEventListener('click', () => select(job.id));
     box.appendChild(row);
   }
   const n = jobs.length, d = jobs.filter(j => j.status === 'done').length;
@@ -295,14 +295,14 @@ function remove(job) {
   if ((job.status === 'running' || job.status === 'queued') && !confirm('This job is still running. Remove it from the list anyway?')) return;
   if (live[job.id] && live[job.id].es) live[job.id].es.close();
   jobs = jobs.filter(j => j.id !== job.id); forgetResult(job.id); delete live[job.id]; delete pendingFiles[job.id]; saveJobs();
-  if (selectedId === job.id) { selectedId = null; pinned = false; const last = jobs[jobs.length - 1]; if (last) select(last.id); else showIdle(); }
+  if (selectedId === job.id) { selectedId = null; const last = jobs[jobs.length - 1]; if (last) select(last.id); else showIdle(); }
   renderQueue(); pump();
 }
 $('#delall').addEventListener('click', () => {
   if (!confirm('Delete all jobs and their SRTs from this browser? This cannot be undone.')) return;
   for (const job of jobs) { if (live[job.id] && live[job.id].es) live[job.id].es.close(); forgetResult(job.id); }
   jobs = []; saveJobs(); Object.keys(live).forEach(k => delete live[k]); Object.keys(pendingFiles).forEach(k => delete pendingFiles[k]);
-  selectedId = null; pinned = false; showIdle(); renderQueue();
+  selectedId = null; showIdle(); renderQueue();
 });
 
 /* ---------- right panel: reset / replay ---------- */
@@ -491,7 +491,7 @@ $('#go').addEventListener('click', () => {
   pendingFiles[job.id] = { idx, sub };
   jobs.push(job); saveJobs(); newState(job);
   idx = sub = null; slots(); $('#go').disabled = true;
-  if (!pinned) select(job.id); else renderQueue();
+  select(job.id);                      // always show the job that was just added
   pump();
 });
 function pump() {
@@ -546,7 +546,7 @@ async function complete(job, st, e) {
   job.summary = { by_source: e.by_source, unresolved: e.unresolved || 0, vlm_used: e.vlm_used || 0, seconds: e.seconds, cues: job.cues };
   st.summary = job.summary; storeResult(job, srt, src, rep);
   job.status = 'done'; delete pendingFiles[job.id]; saveJobs(); renderQueue();
-  if (selectedId === job.id) { pinned = false; paintProgress(st, job); finish(job, st); $('#logbox').open = false; }
+  if (selectedId === job.id) { paintProgress(st, job); finish(job, st); $('#logbox').open = false; }
   pump();
 }
 async function resumeOne(job) {
