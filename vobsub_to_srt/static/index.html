@@ -223,11 +223,13 @@ function loadJobs() { try { return JSON.parse(localStorage.getItem(KEY) || '[]')
 function saveJobs() { try { localStorage.setItem(KEY, JSON.stringify(jobs)); } catch (e) {} }
 function getSrt(id) { try { return localStorage.getItem('vts.srt.' + id); } catch (e) { return null; } }
 function getSrc(id) { try { return localStorage.getItem('vts.src.' + id) || ''; } catch (e) { return ''; } }
-function storeResult(job, srt, src) {
+function getRep(id) { try { return localStorage.getItem('vts.rep.' + id); } catch (e) { return null; } }
+function storeResult(job, srt, src, rep) {
   try { localStorage.setItem('vts.srt.' + job.id, srt); localStorage.setItem('vts.src.' + job.id, src); job.stored = true; }
-  catch (e) { job.stored = false; }              // quota exceeded: keep the server link (1 h)
+  catch (e) { job.stored = false; }              // quota exceeded: keep the server link (10 min)
+  try { if (rep) localStorage.setItem('vts.rep.' + job.id, rep); } catch (e) {}
 }
-function forgetResult(id) { try { localStorage.removeItem('vts.srt.' + id); localStorage.removeItem('vts.src.' + id); } catch (e) {} }
+function forgetResult(id) { try { ['srt', 'src', 'rep'].forEach(k => localStorage.removeItem(`vts.${k}.${id}`)); } catch (e) {} }
 
 let jobs = loadJobs();                 // persisted records
 const live = {};                       // per-job in-memory state for this page session
@@ -274,12 +276,20 @@ function renderQueue() {
   const n = jobs.length, d = jobs.filter(j => j.status === 'done').length;
   $('#qinfo').textContent = n ? `${d} of ${n} done` : '';
 }
+function saveBlob(text, type, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
 function download(job) {
   const srt = getSrt(job.id);
   if (srt === null) { if (job.serverId) location.href = `/api/jobs/${job.serverId}/srt`; return; }
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([srt], { type: 'text/plain;charset=utf-8' })); a.download = job.stem + '.srt';
-  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  saveBlob(srt, 'text/plain;charset=utf-8', job.stem + '.srt');
+}
+function downloadReport(job) {
+  const rep = getRep(job.id);
+  if (rep === null) { if (job.serverId) location.href = `/api/jobs/${job.serverId}/report`; return; }
+  saveBlob(rep, 'application/json', job.stem + '.report.json');
 }
 function remove(job) {
   if ((job.status === 'running' || job.status === 'queued') && !confirm('This job is still running. Remove it from the list anyway?')) return;
@@ -344,8 +354,12 @@ function finish(job, st) {
   if (job.status !== 'done') return;
   const b = document.createElement('button'); b.type = 'button';
   b.className = 'inline-flex items-center gap-2 rounded-md bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500';
-  b.innerHTML = ICON.download + `<span>Download ${job.stem}.srt</span>`; b.addEventListener('click', () => download(job)); r.appendChild(b);
-  if (job.serverId) { const a = document.createElement('a'); a.href = `/api/jobs/${job.serverId}/report`; a.className = 'text-sm text-sky-700 hover:underline dark:text-sky-400'; a.textContent = 'report (JSON)'; r.appendChild(a); }
+  b.innerHTML = ICON.download + '<span>Download SRT</span>'; b.addEventListener('click', () => download(job)); r.appendChild(b);
+  if (getRep(job.id) !== null || job.serverId) {
+    const g = document.createElement('button'); g.type = 'button';
+    g.className = 'inline-flex items-center gap-2 rounded-md bg-zinc-200 px-4 py-2 text-sm font-medium text-zinc-800 hover:bg-zinc-300 dark:bg-zinc-700 dark:text-zinc-100 dark:hover:bg-zinc-600';
+    g.innerHTML = ICON.download + '<span>Download Report</span>'; g.addEventListener('click', () => downloadReport(job)); r.appendChild(g);
+  }
   if (job.stored === false) { const w = document.createElement('span'); w.className = 'text-sm text-amber-600 dark:text-amber-400'; w.textContent = 'browser storage is full - download now, the server copy expires in a few minutes'; r.appendChild(w); }
 }
 
@@ -524,12 +538,13 @@ async function handleEvent(job, st, e) {
   else if (e.event === 'error') { if (st.es) st.es.close(); job.status = 'error'; job.error = e.message; saveJobs(); renderQueue(); if (vis) select(job.id); pump(); }
 }
 async function complete(job, st, e) {
-  let srt = null;
+  let srt = null, rep = null;
   try { const r = await fetch(`/api/jobs/${job.serverId}/srt`); if (r.ok) srt = await r.text(); } catch (err) {}
+  try { const r = await fetch(`/api/jobs/${job.serverId}/report`); if (r.ok) rep = await r.text(); } catch (err) {}
   if (srt === null) { job.status = 'lost'; job.error = 'result could not be fetched'; saveJobs(); renderQueue(); pump(); return; }
   const src = Array.from({ length: job.cues }, (_, i) => { const c = st.cues.get(i); return !c ? 'm' : c.src === 'fallback' ? 'u' : srcKind(c.src) === 'vision' ? 'v' : 'm'; }).join('');
   job.summary = { by_source: e.by_source, unresolved: e.unresolved || 0, vlm_used: e.vlm_used || 0, seconds: e.seconds, cues: job.cues };
-  st.summary = job.summary; storeResult(job, srt, src);
+  st.summary = job.summary; storeResult(job, srt, src, rep);
   job.status = 'done'; delete pendingFiles[job.id]; saveJobs(); renderQueue();
   if (selectedId === job.id) { pinned = false; paintProgress(st, job); finish(job, st); $('#logbox').open = false; }
   pump();

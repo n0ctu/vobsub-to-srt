@@ -356,7 +356,8 @@ async def job_report(job_id: str):
     job = jobs.get(job_id)
     if not job or job.status != "done":
         raise HTTPException(404, "no result for this job")
-    return JSONResponse(job.result.report)
+    return JSONResponse(job.result.report,
+                        headers={"Content-Disposition": f'attachment; filename="{job.stem}.report.json"'})
 
 
 @app.get("/api/stats")
