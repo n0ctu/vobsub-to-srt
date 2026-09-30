@@ -1,0 +1,23 @@
+# secrets
+.env
+
+# environments / tooling
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.claude/
+.idea/
+.vscode/
+
+# input subtitles (copyrighted) and experiments
+Subs*/
+experiments/
+
+# working data (created on first run)
+glyph-memory/
+word-memory/
+dictionaries/
+cache/
+out/
+debug/
