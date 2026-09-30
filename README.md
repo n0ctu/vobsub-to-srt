@@ -50,10 +50,11 @@ uv run vobsub-to-srt --mode vlm-only X.idx        # VLM for every cue (reference
 Outputs: `out/<name>.srt`; `out/<name>.report.json` (VLM calls, where each cue's text came from,
 flagged cues, failures, raw VLM answers); `debug/` (images of cues that could not be read).
 
-**Bundled fonts.** `vobsub_to_srt/fonts/` ships glyph memories for fonts already learned (currently
-two common sans-serif subtitle fonts at 1080p, upright and italic). They are probed like your own; a
-match is copied into `glyph-memory/` on first use and refined there. `--no-bundled-fonts` ignores them.
-Contributions of further fonts are welcome: a glyph memory contains no subtitle text (see below).
+**Baseline fonts.** `glyph-memory/` is tracked in the repo and ships glyph memories for fonts
+already learned (currently two common sans-serif subtitle fonts at 1080p, upright and italic). A
+clone therefore reads those fonts without any VLM (`--mode nocr-only` works offline for them). New
+fonts you process are written next to them; since a glyph memory contains no subtitle text (see
+below), please contribute them back with a pull request to strengthen the baseline.
 
 **Glyph memory vs. word memory.** `glyph-memory/<name>.json` holds one learned font: glyph bitmaps
 (including fused letter pairs such as `rt`), their labels, the gap model and multi-glyph characters.

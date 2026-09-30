@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
@@ -351,9 +353,9 @@ def test_lexicon_repairs_il_non_words_only():
     assert lx.repair(list("ZORVANIA")) is None   # unknown either way: keep
 
 
-def test_bundled_fonts_are_clean_and_loadable():
-    from vobsub_to_srt.pipeline import BUNDLED_FONTS
-    files = sorted(BUNDLED_FONTS.glob("*.json"))
+def test_baseline_glyph_memories_are_clean_and_loadable():
+    """Every DB shipped in glyph-memory/ must be reusable and free of subtitle content."""
+    files = sorted((Path(__file__).resolve().parents[1] / "glyph-memory").glob("*.json"))
     assert files
     for f in files:
         db = GlyphDB.load(f)
@@ -362,22 +364,3 @@ def test_bundled_fonts_are_clean_and_loadable():
         for s_ in db.shapes.values():
             for v in s_.variants:
                 assert all(len(lab) <= 3 for lab in v.votes)    # letters / fused pairs only
-
-
-def test_probe_copies_bundled_db_before_use(tmp_path):
-    from collections import Counter
-    from vobsub_to_srt.pipeline import probe
-    bundled, user = tmp_path / "fonts", tmp_path / "glyph-memory"
-    bundled.mkdir()
-    db = GlyphDB("calm-sable-0000", bundled / "calm-sable-0000.json")
-    lines = segment(render("hello world"))
-    for src in ("a", "b"):
-        learn_cue(db, lines, "hello world", 12, source=src)
-    db.save()
-    before = (bundled / "calm-sable-0000.json").read_bytes()
-    glyphs = {g.key: g for l in lines for g in l.glyphs}
-    chosen, cov, mode = probe(user, Counter(g.key for l in lines for g in l.glyphs), glyphs, 0.5, bundled_dir=bundled)
-    assert mode == "exact" and cov == 1.0
-    assert chosen.path == user / "calm-sable-0000.json" and chosen.path.exists()
-    chosen.save()
-    assert (bundled / "calm-sable-0000.json").read_bytes() == before      # package copy untouched

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import shutil
 import json
 import logging
 import time
@@ -32,7 +31,6 @@ log = logging.getLogger("vobsub_to_srt")
 @dataclass
 class Options:
     db_dir: Path = Path("glyph-memory")
-    bundled_fonts: bool = True           # also probe the glyph memories shipped with the package
     out_dir: Path = Path("out")
     debug_dir: Path | None = Path("debug")
     batch_size: int = 16
@@ -81,29 +79,15 @@ def image_id(mask: np.ndarray) -> str:
     return h.hexdigest()
 
 
-BUNDLED_FONTS = Path(__file__).parent / "fonts"   # glyph memories shipped with the package (read-only)
-
-
 def probe(db_dir: Path, keyfreq: Counter, glyphs: dict, min_cov: float,
-          charset: str = CHARSET_SIMPLIFIED, bundled_dir: Path | None = BUNDLED_FONTS) -> tuple[GlyphDB, float, str]:
+          charset: str = CHARSET_SIMPLIFIED) -> tuple[GlyphDB, float, str]:
     """1) exact bitmap coverage of existing DBs (same font + raster);
     2) otherwise a DB of the same font at another raster size as teacher (scaled transfer);
-    3) otherwise a fresh DB.
-    The user's db_dir is searched first, then the bundled fonts (a same-named user copy wins).
-    A bundled DB that is chosen is copied into db_dir first, so refinements never touch the package."""
+    3) otherwise a fresh DB."""
     total = sum(keyfreq.values()) or 1
-    paths: list[Path] = []
-    seen: set[str] = set()
-    for d in (db_dir, bundled_dir):
-        if d is None or not d.is_dir():
-            continue
-        for p in sorted(d.glob("*.json")):
-            if p.name not in seen:
-                seen.add(p.name)
-                paths.append(p)
     dbs: list[GlyphDB] = []
     best, best_cov = None, 0.0
-    for p in paths:
+    for p in sorted(db_dir.glob("*.json")) if db_dir.is_dir() else []:
         try:
             db = GlyphDB.load(p)
         except Exception as e:  # corrupt DB should not stop the run
@@ -113,12 +97,11 @@ def probe(db_dir: Path, keyfreq: Counter, glyphs: dict, min_cov: float,
             continue          # simplified and literal labels must never mix
         dbs.append(db)
         cov = sum(n for key, n in keyfreq.items() if key in db.shapes) / total
-        log.info("probe: %s covers %.1f%% of glyph occurrences (exact)%s", p.name, 100 * cov,
-                 " [bundled]" if p.parent == bundled_dir else "")
+        log.info("probe: %s covers %.1f%% of glyph occurrences (exact)", p.name, 100 * cov)
         if cov > best_cov:
             best, best_cov = db, cov
     if best is not None and best_cov >= min_cov:
-        return _adopt(best, db_dir, bundled_dir), best_cov, "exact"
+        return best, best_cov, "exact"
     name = random_db_name(db_dir)          # neutral name: DBs can be shared without revealing sources
     suffix = "" if charset == CHARSET_SIMPLIFIED else f".{charset}"
     new = GlyphDB(name, db_dir / f"{name}{suffix}.json")
@@ -135,19 +118,6 @@ def probe(db_dir: Path, keyfreq: Counter, glyphs: dict, min_cov: float,
         transfer.apply(teacher, new, best_tr, glyphs)
         return new, best_tr.coverage, f"teacher {teacher.name} @ scale {best_tr.scale:.3f}"
     return new, 0.0, "new"
-
-
-def _adopt(db: GlyphDB, db_dir: Path, bundled_dir: Path | None) -> GlyphDB:
-    """Move a chosen bundled DB into the user's glyph memory (copy on first use)."""
-    if bundled_dir is None or db.path is None or db.path.parent != bundled_dir:
-        return db
-    db_dir.mkdir(parents=True, exist_ok=True)
-    target = db_dir / db.path.name
-    if not target.exists():
-        shutil.copyfile(db.path, target)
-        log.info("probe: copied bundled glyph memory %s to %s", db.path.name, db_dir)
-    db.path = target
-    return db
 
 
 def _save_debug(opts: Options, st: CueState, tag: str) -> None:
@@ -187,8 +157,7 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
     log.info("%s: %d cues, %d glyphs, %d unique shapes, gap threshold %.1f px (%.1fs)",
              idx_path.name, len(states), sum(keyfreq.values()), len(keyfreq), gap_t, time.time() - t0)
 
-    db, cov, probe_mode = probe(opts.db_dir, keyfreq, sample_glyph, opts.min_probe_coverage, charset,
-                                BUNDLED_FONTS if opts.bundled_fonts else None)
+    db, cov, probe_mode = probe(opts.db_dir, keyfreq, sample_glyph, opts.min_probe_coverage, charset)
     log.info("using DB %s (%s, coverage %.1f%%)", db.path.name if db.path else db.name, probe_mode, 100 * cov)
     db.attach_private(opts.private_dir, opts.word_memory)
     db.dirty = True     # rewrite once: migrates legacy inline words/sources out of the DB file

@@ -15,7 +15,6 @@ Subs*/
 experiments/
 
 # working data (created on first run)
-glyph-memory/
 word-memory/
 dictionaries/
 cache/
