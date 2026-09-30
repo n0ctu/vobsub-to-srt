@@ -139,7 +139,8 @@ first start and grows from there, `word-memory/`, `dictionaries/`, `cache/` and 
 ## Web app
 
 `uv sync --extra web && uv run vobsub-to-srt-web` (or `docker compose up -d`) serves a one-page app on
-port 8000: drop the `.idx` and `.sub`, watch the progress, download the SRT. Design:
+port 8000: drop the `.idx` and `.sub`, watch the progress, download the SRT. In the UI a learned font
+is called a *glyph set*, since its entries are shapes that may span several characters. Design:
 
 - one worker converts jobs one after another (it is the only writer of the shared glyph memory and
   the global VLM throttle); the page shows the queue position;
@@ -150,7 +151,7 @@ port 8000: drop the `.idx` and `.sub`, watch the progress, download the SRT. Des
   daily allowance is used up its jobs still run, teacher-less; per job `VTS_MAX_VLM_CUES` (300);
 - input caps: `.sub` ≤ `VTS_MAX_SUB_MB` (64), ≤ `VTS_MAX_CUES` (3000) cues; job timeout 15 min;
 - uploads are held in memory until their job ran and dropped afterwards; results are held in memory
-  until fetched or expired; the VLM cache is per job and in memory. Nothing of a user's subtitles is
+  for `VTS_JOB_TTL` (10 min) so the browser can fetch them; the VLM cache is per job and in memory. Nothing of a user's subtitles is
   ever written to disk (the `compose.yml` tmpfs for `/tmp` is belt and braces). `VTS_MAX_QUEUE` (20)
   bounds the memory held by waiting uploads.
 - `VTS_TRUST_PROXY=1` takes the client address from `X-Forwarded-For` (only behind your own proxy).
@@ -160,7 +161,7 @@ port 8000: drop the `.idx` and `.sub`, watch the progress, download the SRT. Des
   salt lives only in memory and changes daily — no address is ever stored.
 - the page keeps a personal queue in the browser's localStorage: several tracks can be added and are
   submitted one after another; each finished SRT is fetched and stored client-side, so it can be
-  downloaded again after the server's copy expired. Nothing about users is stored on the server.
+  downloaded again long after the server dropped its copy. Nothing about users is stored on the server.
 
 Reverse proxy (nginx on another host, TLS terminated there):
 

@@ -1,12 +1,12 @@
 """Minimal web app: drop a VobSub, get an SRT.
 
 One process, no database, and nothing of a user's subtitles ever touches a disk: uploads are held
-in memory until their job ran, results are held in memory until fetched or VTS_JOB_TTL seconds old.
+in memory until their job ran, results are held in memory until VTS_JOB_TTL (10 min) old.
 A single worker converts jobs one after another (it is the only writer of the shared glyph memory and
 the global VLM throttle). Per-IP limits: jobs per hour and VLM requests per day; when a client's daily
 VLM allowance is used up its jobs still run, teacher-less. A queue cap bounds memory use.
 
-Environment: VTS_DATA (default "."; glyph memory, word memory, dictionaries), VTS_JOB_TTL=3600,
+Environment: VTS_DATA (default "."; glyph memory, word memory, dictionaries), VTS_JOB_TTL=600,
 VTS_MAX_VLM_CUES=300, VTS_JOBS_PER_HOUR=6, VTS_VLM_PER_DAY=600, VTS_MAX_SUB_MB=64, VTS_MAX_CUES=3000,
 VTS_MAX_QUEUE=20, VTS_TRUST_PROXY=0, VTS_HOST, VTS_PORT, VTS_BASELINE_DIR (fonts shipped with the image).
 Aggregate usage counters are persisted to <data>/stats.json (see Stats: no per-user data).
@@ -42,7 +42,7 @@ def _env_int(name: str, default: int) -> int:
 
 
 DATA = Path(os.environ.get("VTS_DATA", "."))
-JOB_TTL = _env_int("VTS_JOB_TTL", 3600)
+JOB_TTL = _env_int("VTS_JOB_TTL", 600)
 MAX_VLM_CUES = _env_int("VTS_MAX_VLM_CUES", 300)
 JOBS_PER_HOUR = _env_int("VTS_JOBS_PER_HOUR", 6)
 VLM_PER_DAY = _env_int("VTS_VLM_PER_DAY", 600)
