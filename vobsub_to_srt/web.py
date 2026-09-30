@@ -7,7 +7,7 @@ the global VLM throttle). Per-IP limits: jobs per hour and VLM requests per day;
 VLM allowance is used up its jobs still run, teacher-less. A queue cap bounds memory use.
 
 Environment: VTS_DATA (default "."; glyph memory, word memory, dictionaries), VTS_JOB_TTL=600,
-VTS_MAX_VLM_CUES=300, VTS_JOBS_PER_HOUR=6, VTS_VLM_PER_DAY=600, VTS_MAX_SUB_MB=64, VTS_MAX_CUES=3000,
+VTS_MAX_VLM_CUES=0 (no per-job cap), VTS_JOBS_PER_HOUR=20, VTS_VLM_PER_DAY=1000, VTS_MAX_SUB_MB=64, VTS_MAX_CUES=6000,
 VTS_MAX_QUEUE=20, VTS_TRUST_PROXY=0, VTS_HOST, VTS_PORT, VTS_BASELINE_DIR (fonts shipped with the image).
 Aggregate usage counters are persisted to <data>/stats.json (see Stats: no per-user data).
 """
@@ -43,12 +43,12 @@ def _env_int(name: str, default: int) -> int:
 
 DATA = Path(os.environ.get("VTS_DATA", "."))
 JOB_TTL = _env_int("VTS_JOB_TTL", 600)
-MAX_VLM_CUES = _env_int("VTS_MAX_VLM_CUES", 300)
-JOBS_PER_HOUR = _env_int("VTS_JOBS_PER_HOUR", 6)
-VLM_PER_DAY = _env_int("VTS_VLM_PER_DAY", 600)
+MAX_VLM_CUES = _env_int("VTS_MAX_VLM_CUES", 0) or None   # 0 = no per-job cap, only the daily allowance
+JOBS_PER_HOUR = _env_int("VTS_JOBS_PER_HOUR", 20)
+VLM_PER_DAY = _env_int("VTS_VLM_PER_DAY", 1000)
 MAX_SUB_BYTES = _env_int("VTS_MAX_SUB_MB", 64) * 1024 * 1024
 MAX_IDX_BYTES = 2 * 1024 * 1024
-MAX_CUES = _env_int("VTS_MAX_CUES", 3000)
+MAX_CUES = _env_int("VTS_MAX_CUES", 6000)
 TRUST_PROXY = os.environ.get("VTS_TRUST_PROXY", "0") == "1"
 JOB_TIMEOUT = _env_int("VTS_JOB_TIMEOUT", 900)
 MAX_QUEUE = _env_int("VTS_MAX_QUEUE", 20)
@@ -371,7 +371,7 @@ async def _run(job: Job) -> None:
     loop = asyncio.get_running_loop()
     job.status = "running"
     job.push({"event": "started"})
-    budget = min(MAX_VLM_CUES, limiter.vlm_left(job.ip))
+    budget = limiter.vlm_left(job.ip) if MAX_VLM_CUES is None else min(MAX_VLM_CUES, limiter.vlm_left(job.ip))
     config = JobConfig(glyph_memory_dir=DATA / "glyph-memory", word_memory_dir=DATA / "word-memory",
                        dict_dir=DATA / "dictionaries", max_vlm_cues=budget)
 

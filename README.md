@@ -147,9 +147,10 @@ is called a *glyph set*, since its entries are shapes that may span several char
 - uploads and results live under `<data>/jobs/` and are deleted after `VTS_JOB_TTL` (1 h); the
   uploaded files are removed as soon as the job ends; the VLM cache is per job, so no subtitle text
   survives a job — only the glyph memory grows;
-- per-IP limits: `VTS_JOBS_PER_HOUR` (6) and `VTS_VLM_PER_DAY` (600 VLM requests); when a client's
-  daily allowance is used up its jobs still run, teacher-less; per job `VTS_MAX_VLM_CUES` (300);
-- input caps: `.sub` ≤ `VTS_MAX_SUB_MB` (64), ≤ `VTS_MAX_CUES` (3000) cues; job timeout 15 min;
+- per-IP limits: `VTS_JOBS_PER_HOUR` (20) and `VTS_VLM_PER_DAY` (1000 VLM requests); when a client's
+  daily allowance is used up its jobs still run, teacher-less; `VTS_MAX_VLM_CUES` caps a single job
+  (default 0 = only the daily allowance applies);
+- input caps: `.sub` ≤ `VTS_MAX_SUB_MB` (64), ≤ `VTS_MAX_CUES` (6000) cues; job timeout 15 min;
 - uploads are held in memory until their job ran and dropped afterwards; results are held in memory
   for `VTS_JOB_TTL` (10 min) so the browser can fetch them; the VLM cache is per job and in memory. Nothing of a user's subtitles is
   ever written to disk (the `compose.yml` tmpfs for `/tmp` is belt and braces). `VTS_MAX_QUEUE` (20)

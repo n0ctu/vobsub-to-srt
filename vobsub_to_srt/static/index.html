@@ -554,7 +554,7 @@ function tile(label, value, sub) {
 }
 fetch('/api/stats').then(r => r.json()).then(s => {
   $('#fonts').textContent = s.fonts;
-  $('#limits').textContent = `${s.limits.jobs_per_hour} jobs per hour, ${s.limits.vlm_per_day} vision-model requests per day, at most ${s.limits.max_vlm_cues} per job, files up to ${s.limits.max_cues} cues`;
+  $('#limits').textContent = `${s.limits.jobs_per_hour} jobs per hour, ${s.limits.vlm_per_day} vision-model requests per day` + (s.limits.max_vlm_cues ? `, at most ${s.limits.max_vlm_cues} per job` : '') + `, files up to ${s.limits.max_cues} cues`;
   const u = s.usage, g = s.glyphs;
   if (!u || !g) return;
   const memShare = u.cues ? Math.round(100 * u.memory_cues / u.cues) : 0;
