@@ -5,39 +5,73 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>vobsub-to-srt</title>
 <style>
-  :root { color-scheme: light dark; --fg: #1a1a1a; --bg: #fafafa; --muted: #6b6b6b; --line: #d8d8d8; --acc: #2b6cb0; }
-  @media (prefers-color-scheme: dark) { :root { --fg: #e8e8e8; --bg: #141414; --muted: #9a9a9a; --line: #333; --acc: #63a4ff; } }
+  :root { color-scheme: light dark; --fg: #1a1a1a; --bg: #fafafa; --muted: #6b6b6b; --line: #d8d8d8; --acc: #2b6cb0; --ok: #2f855a; --warn: #b7791f; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #e8e8e8; --bg: #141414; --muted: #9a9a9a; --line: #333; --acc: #63a4ff; --ok: #68d391; --warn: #f6ad55; } }
   body { margin: 0; padding: 24px 16px 48px; font: 16px/1.5 system-ui, sans-serif; color: var(--fg); background: var(--bg); }
-  main { max-width: 640px; margin: 0 auto; }
+  main { max-width: 660px; margin: 0 auto; }
+  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
   h1 { font-size: 22px; margin: 0 0 4px; }
+  a { color: var(--acc); }
   p.sub { color: var(--muted); margin: 0 0 20px; }
   #drop { border: 2px dashed var(--line); border-radius: 10px; padding: 32px 16px; text-align: center; cursor: pointer; }
   #drop.over { border-color: var(--acc); }
   #drop input { display: none; }
-  .files { margin: 12px 0; color: var(--muted); font-size: 14px; }
+  .files { margin: 12px 0; color: var(--muted); font-size: 14px; min-height: 1.5em; }
   button { font: inherit; padding: 8px 18px; border-radius: 6px; border: 1px solid var(--line); background: var(--acc); color: #fff; cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
   pre#log { margin: 20px 0 0; padding: 12px; min-height: 80px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
-  a.dl { display: inline-block; margin-top: 14px; padding: 10px 18px; border-radius: 6px; background: var(--acc); color: #fff; text-decoration: none; }
+  #summary { margin-top: 12px; font-size: 15px; }
+  #summary .ok { color: var(--ok); } #summary .warn { color: var(--warn); }
+  a.dl { display: inline-block; margin-top: 12px; padding: 10px 18px; border-radius: 6px; background: var(--acc); color: #fff; text-decoration: none; }
+  details { margin-top: 28px; color: var(--muted); font-size: 14px; }
+  details summary { cursor: pointer; color: var(--fg); }
+  details li { margin: 4px 0; }
   footer { margin-top: 28px; color: var(--muted); font-size: 13px; }
 </style>
 </head>
 <body>
 <main>
-  <h1>VobSub → SRT</h1>
-  <p class="sub">Drop the <code>.idx</code> and <code>.sub</code> of one subtitle track. Known fonts convert in seconds; a new font is learned once with a vision model and is then free for everyone.</p>
+  <header>
+    <h1>VobSub → SRT</h1>
+    <a href="https://github.com/n0ctu/vobsub-to-srt" rel="noopener">source on GitHub</a>
+  </header>
+  <p class="sub">Turns DVD/Blu-ray bitmap subtitles (<code>.idx</code> + <code>.sub</code>) into text subtitles (<code>.srt</code>),
+  keeping <i>italics</i> and line breaks. Letters are matched against a shared memory of fonts; a font nobody has
+  uploaded before is read once by a vision model and is then known for everyone.</p>
 
   <label id="drop">
     <input type="file" id="files" multiple accept=".idx,.sub">
-    <span id="droptext">Drop both files here, or click to choose</span>
+    <span id="droptext">Drop the <b>.idx</b> and <b>.sub</b> of one subtitle track here, or click to choose</span>
   </label>
   <div class="files" id="chosen"></div>
   <button id="go" disabled>Convert</button>
 
   <pre id="log" hidden></pre>
+  <div id="summary"></div>
   <div id="result"></div>
 
-  <footer>Uploads and results are deleted after an hour. Nothing of the subtitle text is kept; only the shapes of the letters (the font) are added to the shared glyph memory. <span id="stats"></span></footer>
+  <details>
+    <summary>How it works, what to expect</summary>
+    <ul>
+      <li><b>Known font:</b> a few seconds, no vision model involved. This is the case for every font that was
+          uploaded before (currently <span id="fonts">?</span> fonts in memory).</li>
+      <li><b>New font:</b> the converter asks a vision model about the cues that teach the most new letters, learns
+          their shapes, and reads the rest itself. Typically 50–200 requests, a couple of minutes; each request is
+          only made once per letter shape, never per cue.</li>
+      <li><b>Accuracy:</b> letters are matched pixel-exactly, so text is reproduced literally (typos included).
+          Where the vision model and the memory disagree, the memory wins once it has enough evidence. Pixel-identical
+          <code>I</code>/<code>l</code> are decided by dictionaries.</li>
+      <li><b>Unknown glyphs</b> that could not be learned (budget used up, no vision model) are written as
+          <code>�</code> so you can find them; the count is shown after the conversion.</li>
+      <li><b>Limits per address:</b> <span id="limits">?</span>. Jobs run one after another; the queue position is shown.</li>
+      <li><b>Data:</b> uploads are deleted the moment the job ends, the SRT after one hour. Only the <em>shapes of the
+          letters</em> (the font, with no words or text) are kept in the shared memory. The memory is published with
+          the source code.</li>
+    </ul>
+  </details>
+
+  <footer>Free and open source: <a href="https://github.com/n0ctu/vobsub-to-srt" rel="noopener">github.com/n0ctu/vobsub-to-srt</a> · MIT license.
+    Problems or a font that came out wrong? <a href="https://github.com/n0ctu/vobsub-to-srt/issues" rel="noopener">Open an issue</a>.</footer>
 </main>
 <script>
 const $ = s => document.querySelector(s);
@@ -48,7 +82,9 @@ function pick(list) {
     const n = f.name.toLowerCase();
     if (n.endsWith('.idx')) idx = f; else if (n.endsWith('.sub')) sub = f;
   }
-  $('#chosen').textContent = [idx && idx.name, sub && sub.name].filter(Boolean).join('  +  ') || '';
+  const parts = [idx && idx.name, sub && sub.name].filter(Boolean);
+  $('#chosen').textContent = parts.length === 2 ? parts.join('  +  ')
+    : parts.length === 1 ? parts[0] + '  —  the matching ' + (idx ? '.sub' : '.idx') + ' is still missing' : '';
   $('#go').disabled = !(idx && sub);
 }
 $('#files').addEventListener('change', e => pick(e.target.files));
@@ -57,29 +93,48 @@ drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add(
 drop.addEventListener('dragleave', () => drop.classList.remove('over'));
 drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); pick(e.dataTransfer.files); });
 
-function say(line) { const l = $('#log'); l.hidden = false; l.textContent += line + '\n'; l.scrollTop = l.scrollHeight; }
+const t0 = { start: 0 };
+function say(line) {
+  const l = $('#log'); l.hidden = false;
+  const t = t0.start ? ((Date.now() - t0.start) / 1000).toFixed(1).padStart(6) + 's  ' : '';
+  l.textContent += t + line + '\n'; l.scrollTop = l.scrollHeight;
+}
 
 function describe(e) {
   switch (e.event) {
-    case 'queued': return `queued (position ${e.position}), ${e.cues} cues`;
-    case 'started': return 'started';
-    case 'no_vlm': return 'no vision model configured on this server: unknown glyphs will be marked �';
-    case 'probe': return e.mode === 'exact' ? `font known (${Math.round(e.coverage * 100)}% of glyphs)`
-                : e.mode.startsWith('teacher') ? `similar font at another size (${e.mode}); learning the rest`
-                : 'new font: learning it from the vision model';
-    case 'round': return `round ${e.round}: ${e.unresolved} cues unresolved, asking the vision model about ${e.batch}` + (e.vlm_budget ? ` (${e.vlm_used}/${e.vlm_budget} requests used)` : '');
-    case 'retry': return `retrying ${e.cues} cues with a stricter prompt`;
+    case 'queued': return e.position > 1 ? `queued at position ${e.position}; ${e.cues} cues` : `queued; ${e.cues} cues`;
+    case 'started': return 'started: decoding and segmenting the cues';
+    case 'no_vlm': return 'this server has no vision model configured: unknown glyphs will be marked �';
+    case 'probe':
+      if (e.mode === 'exact') return `font known: ${Math.round(e.coverage * 100)}% of the glyphs match the memory exactly`;
+      if (e.mode.startsWith('teacher')) return `a known font at another size covers ${Math.round(e.coverage * 100)}%; learning the rest`;
+      return 'font not in memory: learning it from the vision model';
+    case 'round': return `round ${e.round} (${e.phase}): ${e.unresolved} cues unresolved, asking the vision model about ${e.batch}` + (e.vlm_budget ? `  [${e.vlm_used}/${e.vlm_budget} requests used]` : '');
+    case 'retry': return `re-asking ${e.cues} cues with a stricter prompt`;
     case 'budget_exhausted': return `vision-model budget for this job used up; ${e.unresolved} cues will contain �`;
-    case 'done': return `done: ${e.unresolved ? e.unresolved + ' cues contain unknown glyphs (�)' : 'all cues resolved'}` + (e.seconds ? ` in ${e.seconds}s` : '');
+    case 'done': return 'done' + (e.seconds ? ` in ${e.seconds}s` : '');
     case 'error': return 'error: ' + e.message;
     default: return e.event;
   }
 }
 
+function summarize(e) {
+  const by = e.by_source || {};
+  const nocr = (by.nocr || 0) + (by['nocr-arbitrated'] || 0);
+  const vlm = Object.entries(by).filter(([k]) => k.startsWith('vlm')).reduce((a, [, v]) => a + v, 0);
+  const bad = e.unresolved || 0;
+  const parts = [`${e.cues} cues`, `${nocr} read from the glyph memory`];
+  if (vlm) parts.push(`${vlm} read by the vision model (${e.vlm_used} requests)`);
+  const cls = bad ? 'warn' : 'ok';
+  const tail = bad ? `${bad} cues contain unknown glyphs (�) – search the file for that character` : 'every cue resolved';
+  $('#summary').innerHTML = `<span class="${cls}">${tail}.</span> ${parts.join(', ')}.`;
+}
+
 $('#go').addEventListener('click', async () => {
-  $('#go').disabled = true; $('#result').innerHTML = ''; $('#log').textContent = '';
+  $('#go').disabled = true; $('#result').innerHTML = ''; $('#summary').innerHTML = ''; $('#log').textContent = '';
+  t0.start = Date.now();
   const fd = new FormData(); fd.append('idx', idx); fd.append('sub', sub);
-  say('uploading…');
+  say(`uploading ${idx.name} (${(idx.size / 1024).toFixed(0)} KB) and ${sub.name} (${(sub.size / 1048576).toFixed(1)} MB)…`);
   const r = await fetch('/api/jobs', { method: 'POST', body: fd });
   if (!r.ok) { const t = await r.json().catch(() => ({})); say('rejected: ' + (t.detail || r.status)); $('#go').disabled = false; return; }
   const { id } = await r.json();
@@ -88,16 +143,19 @@ $('#go').addEventListener('click', async () => {
     const e = JSON.parse(m.data);
     say(describe(e));
     if (e.event === 'done') {
-      es.close();
-      $('#result').innerHTML = `<a class="dl" href="/api/jobs/${id}/srt">Download ${idx.name.replace(/\.idx$/i, '.srt')}</a>`;
+      es.close(); summarize(e);
+      $('#result').innerHTML = `<a class="dl" href="/api/jobs/${id}/srt">Download ${idx.name.replace(/\.idx$/i, '.srt')}</a>
+        <a href="/api/jobs/${id}/report" style="margin-left:12px;font-size:14px">report (JSON)</a>`;
       $('#go').disabled = false;
     } else if (e.event === 'error') { es.close(); $('#go').disabled = false; }
   };
-  es.onerror = () => { say('connection lost; the job continues – reload to check'); es.close(); $('#go').disabled = false; };
+  es.onerror = () => { say('connection lost; the job continues – reload the page and check again'); es.close(); $('#go').disabled = false; };
 });
 
 fetch('/api/stats').then(r => r.json()).then(s => {
-  $('#stats').textContent = `${s.fonts} fonts known. Limits: ${s.limits.jobs_per_hour} jobs/hour, ${s.limits.vlm_per_day} vision-model requests/day per address.`;
+  $('#fonts').textContent = s.fonts;
+  $('#limits').textContent = `${s.limits.jobs_per_hour} jobs per hour, ${s.limits.vlm_per_day} vision-model requests per day, at most ${s.limits.max_vlm_cues} per job, files up to ${s.limits.max_cues} cues`;
+  if (s.queued || s.running) say(`${s.running + s.queued} job(s) currently in progress on this server`);
 }).catch(() => {});
 </script>
 </body>

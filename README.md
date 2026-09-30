@@ -1,5 +1,8 @@
 # vobsub-to-srt
 
+**Try it online: [vts.canihaz.cloud](https://vts.canihaz.cloud)** — drop a `.idx`/`.sub` pair, get the `.srt`.
+Every font learned there becomes part of the shared glyph memory in this repository.
+
 VobSub (`.idx`/`.sub`) → SRT. Subtitle glyphs are read by deterministic bitmap matching
 (in the spirit of Subtitle Edit's binary image compare); a vision LLM (any OpenAI-compatible
 endpoint, developed against DeepSeek) acts as the *teacher* for glyphs the database doesn't know yet.
