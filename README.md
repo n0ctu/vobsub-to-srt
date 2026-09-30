@@ -145,6 +145,8 @@ port 8000: drop the `.idx` and `.sub`, watch the progress, download the SRT. Des
 - per-IP limits: `VTS_JOBS_PER_HOUR` (6) and `VTS_VLM_PER_DAY` (600 VLM requests); when a client's
   daily allowance is used up its jobs still run, teacher-less; per job `VTS_MAX_VLM_CUES` (300);
 - input caps: `.sub` ≤ `VTS_MAX_SUB_MB` (64), ≤ `VTS_MAX_CUES` (3000) cues; job timeout 15 min;
+- transient job data (uploads, per-job VLM answers, results) lives under `<data>/jobs` and the
+  process's temp dir; `compose.yml` mounts both as tmpfs, so nothing of a user's subtitles reaches a disk.
 - `VTS_TRUST_PROXY=1` takes the client address from `X-Forwarded-For` (only behind your own proxy).
 - the page keeps a personal queue in the browser's localStorage: several tracks can be added and are
   submitted one after another; each finished SRT is fetched and stored client-side, so it can be
@@ -175,6 +177,16 @@ res.srt, res.unresolved, res.vlm_used, res.budget_exhausted, res.report
 subtitle text persists across jobs), a VLM budget, progress events (`probe`, `round`, `retry`,
 `budget_exhausted`, `done`, `no_vlm`), and an optional per-job endpoint (`JobConfig(base_url=,
 api_key=, model=)` for bring-your-own-key). Only the shared glyph memory is written.
+
+## Roadmap
+
+- **Memory-only jobs in the code itself**, not just via tmpfs: the pipeline takes the `.idx`/`.sub`
+  bytes and returns the SRT without touching a filesystem (in-memory VLM cache, no temp dir, no job
+  files); the web app keeps results in RAM until fetched. Then also drop the per-image hash sidecar
+  for web jobs, so the only thing a job leaves behind is letter shapes.
+- Bring-your-own-key (a user's own OpenAI-compatible endpoint for their jobs).
+- A candidates tier for fonts learned on the server before they are promoted into the baseline.
+- Dictionaries for more languages in the lexicon gate.
 
 ## Development
 

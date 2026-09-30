@@ -26,12 +26,12 @@
         <p class="text-sm text-zinc-500 dark:text-zinc-400">Bitmap subtitles in, text subtitles out.</p>
       </div>
       <div class="flex items-center gap-2 shrink-0">
-        <a href="https://github.com/n0ctu/vobsub-to-srt" rel="noopener" title="Source on GitHub" class="inline-flex items-center gap-1.5 rounded-md border border-zinc-300 py-1.5 pl-2.5 pr-2 text-sm text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800">
+        <a href="https://github.com/n0ctu/vobsub-to-srt" rel="noopener" title="Source on GitHub" class="inline-flex h-8 items-center gap-1.5 rounded-md border border-zinc-300 px-2 text-sm leading-none text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800">
           <span>n0ctu</span>
           <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8"/></svg>
         </a>
         <!-- theme cycle: system -> light -> dark; icons from Bootstrap Icons (MIT): circle-half, brightness-high-fill, moon-fill -->
-        <button id="theme" type="button" class="rounded-md border border-zinc-300 p-1.5 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800">
+        <button id="theme" type="button" class="inline-flex h-8 items-center rounded-md border border-zinc-300 px-2 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800">
           <svg data-mode="system" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 15A7 7 0 1 0 8 1zm0 1A8 8 0 1 1 8 0a8 8 0 0 1 0 16"/></svg>
           <svg data-mode="light" hidden xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M12 8a4 4 0 1 1-8 0 4 4 0 0 1 8 0M8 0a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2A.5.5 0 0 1 8 0m0 13a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2A.5.5 0 0 1 8 13m8-5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1 0-1h2a.5.5 0 0 1 .5.5M3 8a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1 0-1h2A.5.5 0 0 1 3 8m10.657-5.657a.5.5 0 0 1 0 .707l-1.414 1.415a.5.5 0 1 1-.707-.708l1.414-1.414a.5.5 0 0 1 .707 0m-9.193 9.193a.5.5 0 0 1 0 .707L3.05 13.657a.5.5 0 0 1-.707-.707l1.414-1.414a.5.5 0 0 1 .707 0m9.193 2.121a.5.5 0 0 1-.707 0l-1.414-1.414a.5.5 0 0 1 .707-.707l1.414 1.414a.5.5 0 0 1 0 .707M4.464 4.465a.5.5 0 0 1-.707 0L2.343 3.05a.5.5 0 1 1 .707-.707l1.414 1.414a.5.5 0 0 1 0 .708"/></svg>
           <svg data-mode="dark" hidden xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 .278a.77.77 0 0 1 .08.858 7.2 7.2 0 0 0-.878 3.46c0 4.021 3.278 7.277 7.318 7.277q.792-.001 1.533-.16a.79.79 0 0 1 .81.316.73.73 0 0 1-.031.893A8.35 8.35 0 0 1 8.344 16C3.734 16 0 12.286 0 7.71 0 4.266 2.114 1.312 5.124.06A.75.75 0 0 1 6 .278"/></svg>
@@ -40,16 +40,25 @@
     </header>
 
     <p class="text-[15px] leading-relaxed">Drop the <code class="rounded bg-zinc-200/70 px-1 dark:bg-zinc-800">.idx</code> and
-      <code class="rounded bg-zinc-200/70 px-1 dark:bg-zinc-800">.sub</code> of one subtitle track and get an
-      <code class="rounded bg-zinc-200/70 px-1 dark:bg-zinc-800">.srt</code>, italics and line breaks included.
-      Letters are matched against a shared memory of fonts; a font nobody has uploaded before is read once by a vision
-      model and is then known for everyone.</p>
+      <code class="rounded bg-zinc-200/70 px-1 dark:bg-zinc-800">.sub</code> of one subtitle track to generate an
+      <code class="rounded bg-zinc-200/70 px-1 dark:bg-zinc-800">.srt</code>.</p>
 
     <label id="drop" class="flex min-h-44 cursor-pointer items-center justify-center rounded-xl border-2 border-dashed border-zinc-300 bg-white p-8 text-center transition hover:border-sky-500 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-sky-400">
       <input type="file" id="files" multiple accept=".idx,.sub" class="hidden">
       <span class="text-zinc-600 dark:text-zinc-300">Drop the <b>.idx</b> and <b>.sub</b> here, or click to choose</span>
     </label>
-    <div id="chosen" class="min-h-6 text-sm text-zinc-500 dark:text-zinc-400"></div>
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div id="slot-idx" class="flex items-center gap-2 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true" class="shrink-0"><path d="M8.5 5.6a.5.5 0 1 0-1 0v2.9h-3a.5.5 0 0 0 0 1H8a.5.5 0 0 0 .5-.5z"/><path d="M6.5 1A.5.5 0 0 1 7 .5h2a.5.5 0 0 1 0 1v.57c1.36.196 2.594.78 3.584 1.64l.012-.013.354-.354-.354-.353a.5.5 0 0 1 .707-.708l1.414 1.415a.5.5 0 1 1-.707.707l-.353-.354-.354.354-.013.012A7 7 0 1 1 7 2.071V1.5a.5.5 0 0 1-.5-.5M8 3a6 6 0 1 0 .001 12A6 6 0 0 0 8 3"/></svg>
+        <span class="name min-w-0 flex-1 truncate text-zinc-400 dark:text-zinc-500">timing index</span>
+        <span class="shrink-0 font-mono text-xs text-zinc-500">.idx</span>
+      </div>
+      <div id="slot-sub" class="flex items-center gap-2 rounded-lg border border-zinc-300 bg-white px-3 py-2 text-sm dark:border-zinc-700 dark:bg-zinc-900">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true" class="shrink-0"><path d="M6.002 5.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0"/><path d="M2.002 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2zm12 1a1 1 0 0 1 1 1v6.5l-3.777-1.947a.5.5 0 0 0-.577.093l-3.71 3.71-2.66-1.772a.5.5 0 0 0-.63.062L1.002 12V3a1 1 0 0 1 1-1z"/></svg>
+        <span class="name min-w-0 flex-1 truncate text-zinc-400 dark:text-zinc-500">subtitle bitmaps</span>
+        <span class="shrink-0 font-mono text-xs text-zinc-500">.sub</span>
+      </div>
+    </div>
     <button id="go" disabled class="rounded-md bg-sky-600 px-5 py-2 font-medium text-white shadow-sm hover:bg-sky-500 disabled:cursor-default disabled:opacity-40">Convert</button>
 
     <!-- ---------- personal queue (browser storage only) ---------- -->
@@ -66,21 +75,26 @@
     </div>
 
     <details class="rounded-lg border border-zinc-200 bg-white p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
-      <summary class="cursor-pointer font-medium text-zinc-800 dark:text-zinc-200">How it works, what to expect</summary>
+      <summary class="cursor-pointer font-medium text-zinc-800 dark:text-zinc-200">Privacy and how it works</summary>
       <ul class="mt-3 space-y-2 list-disc pl-5">
+        <li><b>Privacy:</b> your files are held in the server's volatile memory only while the job runs and are never
+          written to disk. That much is necessary: unknown letters are shown to a vision model, and their shapes are
+          added to the shared glyph memory, which improves the tool for everyone; newly learned glyph sets are
+          published to the GitHub repository regularly. No words or text are kept — the finished SRT is stored in your
+          browser (the server holds it in memory for an hour so your browser can fetch it).</li>
         <li><b>Known font:</b> a few seconds, no vision model involved. This is the case for every font that was uploaded before (currently <span id="fonts">?</span> fonts in memory).</li>
         <li><b>New font:</b> the converter asks a vision model about the cues that teach the most new letters, learns their shapes, and reads the rest itself. Typically 50–200 requests, a couple of minutes; each request is made once per letter shape, never per cue.</li>
         <li><b>Accuracy:</b> letters are matched pixel-exactly, so text is reproduced literally (typos included). Where the vision model and the memory disagree, the memory wins once it has enough evidence. Pixel-identical <code>I</code>/<code>l</code> are decided by dictionaries.</li>
         <li><b>Unknown glyphs</b> that could not be learned (budget used up, no vision model) are written as <code>�</code> so you can find them.</li>
         <li><b>Queue:</b> add as many tracks as you like; they are converted one after another. Jobs and their SRTs stay in this browser's storage until you delete them, so you can download them again any time.</li>
         <li><b>Limits per address:</b> <span id="limits">?</span>.</li>
-        <li><b>Data:</b> uploads are deleted the moment the job ends, the server's copy of the SRT after one hour. Only the <em>shapes of the letters</em> (the font, no words or text) are kept in the shared memory, which is published with the source code.</li>
       </ul>
     </details>
 
-    <footer class="text-xs text-zinc-500 dark:text-zinc-500">Free and open source, MIT license ·
-      <a href="https://github.com/n0ctu/vobsub-to-srt" rel="noopener" class="text-sky-700 hover:underline dark:text-sky-400">github.com/n0ctu/vobsub-to-srt</a> ·
-      a font that came out wrong? <a href="https://github.com/n0ctu/vobsub-to-srt/issues" rel="noopener" class="text-sky-700 hover:underline dark:text-sky-400">open an issue</a></footer>
+    <footer class="text-xs text-zinc-500 dark:text-zinc-500">Free and open source, MIT license -
+      <a href="https://github.com/n0ctu/vobsub-to-srt" rel="noopener" class="text-sky-700 hover:underline dark:text-sky-400">github.com/n0ctu/vobsub-to-srt</a> -
+      a font that came out wrong? <a href="https://github.com/n0ctu/vobsub-to-srt/issues" rel="noopener" class="text-sky-700 hover:underline dark:text-sky-400">open an issue</a> -
+      Hosting and LLM sponsored by <a href="https://wyna-informatik.ch/" rel="noopener" class="text-sky-700 hover:underline dark:text-sky-400">Wyna Informatik</a></footer>
   </section>
 
   <!-- ============ right panel ============ -->
@@ -174,10 +188,18 @@ function pick(list) {
     const n = f.name.toLowerCase();
     if (n.endsWith('.idx')) idx = f; else if (n.endsWith('.sub')) sub = f;
   }
-  const parts = [idx && idx.name, sub && sub.name].filter(Boolean);
-  $('#chosen').textContent = parts.length === 2 ? parts.join('  +  ')
-    : parts.length === 1 ? parts[0] + '  —  the matching ' + (idx ? '.sub' : '.idx') + ' is still missing' : '';
+  slots();
   $('#go').disabled = !(idx && sub);
+}
+const RED = ['border-red-400', 'text-red-600', 'dark:border-red-500', 'dark:text-red-400'];
+function slots() {
+  for (const [id, file, empty] of [['#slot-idx', idx, 'timing index'], ['#slot-sub', sub, 'subtitle bitmaps']]) {
+    const el = $(id), name = el.querySelector('.name');
+    name.textContent = file ? file.name : empty;
+    name.classList.toggle('text-zinc-400', !file); name.classList.toggle('dark:text-zinc-500', !file);
+    const missing = !file && (idx || sub);            // one file chosen, this one still missing
+    RED.forEach(c => el.classList.toggle(c, !!missing));
+  }
 }
 $('#files').addEventListener('change', e => { pick(e.target.files); e.target.value = ''; });
 const drop = $('#drop');
@@ -444,7 +466,7 @@ $('#go').addEventListener('click', () => {
                 cues: 0, created: Date.now(), status: 'pending', serverId: null, summary: null, error: null };
   pendingFiles[job.id] = { idx, sub };
   jobs.push(job); saveJobs(); newState(job);
-  idx = sub = null; $('#chosen').textContent = ''; $('#go').disabled = true;
+  idx = sub = null; slots(); $('#go').disabled = true;
   if (!pinned) select(job.id); else renderQueue();
   pump();
 });
