@@ -26,7 +26,9 @@
         <p class="text-sm text-zinc-500 dark:text-zinc-400">Bitmap subtitles in, text subtitles out.</p>
       </div>
       <div class="flex items-center gap-2 shrink-0">
-        <a href="https://github.com/n0ctu/vobsub-to-srt" rel="noopener" class="text-sm text-sky-700 hover:underline dark:text-sky-400">GitHub</a>
+        <a href="https://github.com/n0ctu/vobsub-to-srt" rel="noopener" title="Source on GitHub" aria-label="Source on GitHub" class="rounded-md border border-zinc-300 p-1.5 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8"/></svg>
+        </a>
         <!-- theme cycle: system -> light -> dark; icons from Bootstrap Icons (MIT): circle-half, sun-fill, moon-fill -->
         <button id="theme" type="button" class="rounded-md border border-zinc-300 p-1.5 text-zinc-600 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800">
           <svg data-mode="system" xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 15A7 7 0 1 0 8 1zm0 1A8 8 0 1 1 8 0a8 8 0 0 1 0 16"/></svg>
@@ -49,6 +51,19 @@
     <div id="chosen" class="min-h-6 text-sm text-zinc-500 dark:text-zinc-400"></div>
     <button id="go" disabled class="rounded-md bg-sky-600 px-5 py-2 font-medium text-white shadow-sm hover:bg-sky-500 disabled:cursor-default disabled:opacity-40">Convert</button>
 
+    <!-- ---------- personal queue (browser storage only) ---------- -->
+    <div id="queue" hidden class="rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+      <div class="flex items-baseline justify-between border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+        <h2 class="text-sm font-medium">Your jobs</h2>
+        <span id="qinfo" class="text-xs text-zinc-500"></span>
+      </div>
+      <div id="jobs" class="divide-y divide-zinc-100 dark:divide-zinc-800"></div>
+      <div class="flex items-center justify-between gap-3 border-t border-zinc-200 px-4 py-2 text-xs text-zinc-500 dark:border-zinc-800">
+        <span>Stored only in this browser; the server deletes its copy after an hour.</span>
+        <button id="delall" type="button" class="shrink-0 rounded-md border border-zinc-300 px-2 py-1 text-red-600 hover:bg-red-50 dark:border-zinc-700 dark:text-red-400 dark:hover:bg-red-950/40">Delete all</button>
+      </div>
+    </div>
+
     <details class="rounded-lg border border-zinc-200 bg-white p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
       <summary class="cursor-pointer font-medium text-zinc-800 dark:text-zinc-200">How it works, what to expect</summary>
       <ul class="mt-3 space-y-2 list-disc pl-5">
@@ -56,8 +71,9 @@
         <li><b>New font:</b> the converter asks a vision model about the cues that teach the most new letters, learns their shapes, and reads the rest itself. Typically 50–200 requests, a couple of minutes; each request is made once per letter shape, never per cue.</li>
         <li><b>Accuracy:</b> letters are matched pixel-exactly, so text is reproduced literally (typos included). Where the vision model and the memory disagree, the memory wins once it has enough evidence. Pixel-identical <code>I</code>/<code>l</code> are decided by dictionaries.</li>
         <li><b>Unknown glyphs</b> that could not be learned (budget used up, no vision model) are written as <code>�</code> so you can find them.</li>
-        <li><b>Limits per address:</b> <span id="limits">?</span>. Jobs run one after another; the queue position is shown.</li>
-        <li><b>Data:</b> uploads are deleted the moment the job ends, the SRT after one hour. Only the <em>shapes of the letters</em> (the font, no words or text) are kept in the shared memory, which is published with the source code.</li>
+        <li><b>Queue:</b> add as many tracks as you like; they are converted one after another. Jobs and their SRTs stay in this browser's storage until you delete them, so you can download them again any time.</li>
+        <li><b>Limits per address:</b> <span id="limits">?</span>.</li>
+        <li><b>Data:</b> uploads are deleted the moment the job ends, the server's copy of the SRT after one hour. Only the <em>shapes of the letters</em> (the font, no words or text) are kept in the shared memory, which is published with the source code.</li>
       </ul>
     </details>
 
@@ -73,6 +89,7 @@
     </div>
 
     <div id="progress" hidden class="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+      <div id="ptitle" class="mb-2 truncate text-sm font-medium"></div>
       <div class="h-2.5 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
         <div id="fill" class="h-full w-0 rounded-full bg-sky-500 transition-[width] duration-300"></div>
       </div>
@@ -89,7 +106,7 @@
 
     <div id="tbox" hidden class="rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
       <div class="flex items-baseline justify-between border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
-        <h2 class="text-sm font-medium">Live transcript</h2>
+        <h2 class="text-sm font-medium">Transcript</h2>
         <span class="text-xs text-zinc-500">
           <span class="inline-block h-2 w-2 rounded-full bg-zinc-400 align-middle"></span> memory
           <span class="ml-2 inline-block h-2 w-2 rounded-full bg-sky-500 align-middle"></span> vision
@@ -114,11 +131,18 @@
       </div>
       <p id="gpending" class="px-1 text-xs text-zinc-500"></p>
     </div>
+    <p id="gnote" hidden class="px-1 text-xs text-zinc-500">Glyph details are only shown while a job runs; this job's transcript and SRT are kept.</p>
   </section>
 </main>
 
 <script>
 const $ = s => document.querySelector(s);
+/* Bootstrap Icons (MIT): download, trash, arrow-clockwise */
+const ICON = {
+  download: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5"/><path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708z"/></svg>',
+  trash: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0z"/><path d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4zM2.5 3h11V2h-11z"/></svg>',
+  retry: '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16" aria-hidden="true"><path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2z"/><path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466"/></svg>',
+};
 
 /* ---------- theme: system -> light -> dark (no stored choice = follow the OS) ---------- */
 const MODES = ['system', 'light', 'dark'], NAMES = { system: 'System', light: 'Light', dark: 'Dark' };
@@ -154,18 +178,149 @@ function pick(list) {
     : parts.length === 1 ? parts[0] + '  —  the matching ' + (idx ? '.sub' : '.idx') + ' is still missing' : '';
   $('#go').disabled = !(idx && sub);
 }
-$('#files').addEventListener('change', e => pick(e.target.files));
+$('#files').addEventListener('change', e => { pick(e.target.files); e.target.value = ''; });
 const drop = $('#drop');
 drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('border-sky-500'); });
 drop.addEventListener('dragleave', () => drop.classList.remove('border-sky-500'));
 drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('border-sky-500'); pick(e.dataTransfer.files); });
 
+/* ---------- storage (this browser only) ---------- */
+const KEY = 'vts.jobs';
+function loadJobs() { try { return JSON.parse(localStorage.getItem(KEY) || '[]'); } catch (e) { return []; } }
+function saveJobs() { try { localStorage.setItem(KEY, JSON.stringify(jobs)); } catch (e) {} }
+function getSrt(id) { try { return localStorage.getItem('vts.srt.' + id); } catch (e) { return null; } }
+function getSrc(id) { try { return localStorage.getItem('vts.src.' + id) || ''; } catch (e) { return ''; } }
+function storeResult(job, srt, src) {
+  try { localStorage.setItem('vts.srt.' + job.id, srt); localStorage.setItem('vts.src.' + job.id, src); job.stored = true; }
+  catch (e) { job.stored = false; }              // quota exceeded: keep the server link (1 h)
+}
+function forgetResult(id) { try { localStorage.removeItem('vts.srt.' + id); localStorage.removeItem('vts.src.' + id); } catch (e) {} }
+
+let jobs = loadJobs();                 // persisted records
+const live = {};                       // per-job in-memory state for this page session
+const pendingFiles = {};               // id -> {idx, sub} (File objects cannot be persisted)
+let selectedId = null, pinned = false;
+
+function newState(job) {
+  return live[job.id] = { log: [], cues: new Map(), glyphs: new Map(), start: 0,
+    prog: { total: job.cues || 0, resolved: 0, vlmUsed: 0, vlmBudget: null, phase: 'queued' }, summary: null };
+}
+
+/* ---------- queue list ---------- */
+const DOT = { pending: 'bg-zinc-400', queued: 'bg-sky-400 animate-pulse', running: 'bg-sky-500 animate-pulse',
+              done: 'bg-emerald-500', warn: 'bg-amber-500', error: 'bg-red-500', lost: 'bg-red-500', rejected: 'bg-red-500' };
+const STATUS = { pending: 'waiting', queued: 'submitted', running: 'converting', done: 'done', error: 'failed',
+                 lost: 'expired on the server', rejected: 'rejected' };
+const ago = t => { const s = Math.max(0, (Date.now() - t) / 1000); return s < 60 ? 'just now' : s < 3600 ? `${Math.floor(s / 60)} min ago` : s < 86400 ? `${Math.floor(s / 3600)} h ago` : `${Math.floor(s / 86400)} d ago`; };
+function renderQueue() {
+  const box = $('#jobs'); box.innerHTML = '';
+  $('#queue').hidden = jobs.length === 0;
+  for (const job of [...jobs].reverse()) {
+    const row = document.createElement('div');
+    const sel = job.id === selectedId;
+    row.className = 'flex cursor-pointer items-center gap-3 px-3 py-2 text-sm ' + (sel ? 'bg-sky-50 dark:bg-sky-950/40' : 'hover:bg-zinc-50 dark:hover:bg-zinc-800/60');
+    const kind = job.status === 'done' && job.summary && job.summary.unresolved ? 'warn' : job.status;
+    let detail = STATUS[job.status] || job.status;
+    if (job.status === 'done' && job.summary) detail = job.summary.unresolved ? `${job.summary.unresolved} unresolved cues` : 'done';
+    if (job.status === 'pending' && !pendingFiles[job.id]) detail = 'files no longer available (page was reloaded) – add again';
+    if ((job.status === 'rejected' || job.status === 'error') && job.error) detail = job.error;
+    if (job.status === 'done' && job.stored === false) detail += ' · browser storage full, download now';
+    row.innerHTML = `<span class="h-2.5 w-2.5 shrink-0 rounded-full ${DOT[kind] || DOT.pending}"></span>
+      <span class="min-w-0 flex-1"><span class="block truncate font-medium"></span>
+        <span class="block truncate text-xs text-zinc-500">${job.cues ? job.cues + ' cues · ' : ''}${detail} · ${ago(job.created)}</span></span>
+      <span class="flex shrink-0 gap-1"></span>`;
+    row.children[1].children[0].textContent = job.stem;
+    const btns = row.children[2];
+    const mk = (icon, title, cls, fn) => { const b = document.createElement('button'); b.type = 'button'; b.title = title; b.className = 'rounded p-1 ' + cls; b.innerHTML = ICON[icon]; b.addEventListener('click', e => { e.stopPropagation(); fn(); }); btns.appendChild(b); };
+    if ((job.status === 'rejected' || job.status === 'error') && pendingFiles[job.id]) mk('retry', 'Retry', 'text-zinc-500 hover:bg-zinc-200 dark:hover:bg-zinc-700', () => { job.status = 'pending'; job.error = null; saveJobs(); renderQueue(); pump(); });
+    if (job.status === 'done') mk('download', 'Download SRT', 'text-sky-700 hover:bg-sky-100 dark:text-sky-400 dark:hover:bg-sky-900/40', () => download(job));
+    mk('trash', 'Delete from this browser', 'text-zinc-500 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-950/40', () => remove(job));
+    row.addEventListener('click', () => { pinned = true; select(job.id); });
+    box.appendChild(row);
+  }
+  const n = jobs.length, d = jobs.filter(j => j.status === 'done').length;
+  $('#qinfo').textContent = n ? `${d} of ${n} done` : '';
+}
+function download(job) {
+  const srt = getSrt(job.id);
+  if (srt === null) { if (job.serverId) location.href = `/api/jobs/${job.serverId}/srt`; return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([srt], { type: 'text/plain;charset=utf-8' })); a.download = job.stem + '.srt';
+  document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+function remove(job) {
+  if ((job.status === 'running' || job.status === 'queued') && !confirm('This job is still running. Remove it from the list anyway?')) return;
+  if (live[job.id] && live[job.id].es) live[job.id].es.close();
+  jobs = jobs.filter(j => j.id !== job.id); forgetResult(job.id); delete live[job.id]; delete pendingFiles[job.id]; saveJobs();
+  if (selectedId === job.id) { selectedId = null; pinned = false; const last = jobs[jobs.length - 1]; if (last) select(last.id); else showIdle(); }
+  renderQueue(); pump();
+}
+$('#delall').addEventListener('click', () => {
+  if (!confirm('Delete all jobs and their SRTs from this browser? This cannot be undone.')) return;
+  for (const job of jobs) { if (live[job.id] && live[job.id].es) live[job.id].es.close(); forgetResult(job.id); }
+  jobs = []; saveJobs(); Object.keys(live).forEach(k => delete live[k]); Object.keys(pendingFiles).forEach(k => delete pendingFiles[k]);
+  selectedId = null; pinned = false; showIdle(); renderQueue();
+});
+
+/* ---------- right panel: reset / replay ---------- */
+function showIdle() { reset(); $('#idle').hidden = false; $('#progress').hidden = true; }
+function reset() {
+  $('#idle').hidden = true; $('#progress').hidden = false; $('#logbox').open = false;
+  $('#result').innerHTML = ''; $('#summary').innerHTML = ''; $('#log').textContent = ''; $('#ptitle').textContent = '';
+  rows.clear(); $('#transcript').innerHTML = ''; $('#tbox').hidden = true;
+  glyphEls.clear(); $('#gnew').innerHTML = '<span class="empty text-zinc-500">none so far</span>'; $('#gknown').innerHTML = ''; $('#gpending').textContent = ''; $('#gbox').hidden = true; $('#gnote').hidden = true;
+}
+function select(id) {
+  selectedId = id; renderQueue();
+  const job = jobs.find(j => j.id === id); if (!job) return showIdle();
+  reset(); $('#ptitle').textContent = job.stem;
+  const st = live[id];
+  if (st) {                                    // seen in this session: replay
+    $('#log').textContent = st.log.join('\n'); $('#logbox').open = job.status === 'running' || job.status === 'queued';
+    paintProgress(st, job);
+    if (st.cues.size) transcriptAdd([...st.cues.values()], false);
+    if (st.glyphs.size) glyphAdd([...st.glyphs.values()], 0, st.pending || 0, false);
+    if (st.summary) finish(job, st);
+  } else {                                     // from storage
+    const srt = getSrt(id);
+    paintProgress(newState(job), job);
+    if (job.status === 'done') {
+      if (srt !== null) { const src = getSrc(id); transcriptAdd(parseSrt(srt).map((c, i) => ({ i, start: c.start, text: c.text, src: { m: 'nocr', v: 'vlm', u: 'fallback' }[src[i]] || 'nocr' })), false); }
+      finish(job, null); $('#gnote').hidden = false;
+    } else if (job.status === 'pending') {
+      $('#pleft').textContent = pendingFiles[id] ? 'waiting for its turn' : 'files no longer available – add the track again';
+    } else if (job.status === 'rejected' || job.status === 'error' || job.status === 'lost') {
+      $('#pleft').textContent = (STATUS[job.status] || job.status) + (job.error ? ': ' + job.error : '');
+    }
+  }
+}
+function parseSrt(srt) {
+  const out = [];
+  for (const block of srt.trim().split(/\n\s*\n/)) {
+    const lines = block.split('\n');
+    if (lines.length < 3 || !lines[1].includes('-->')) continue;
+    const [h, m, s] = lines[1].split('-->')[0].trim().split(':'); const [sec, ms] = s.split(',');
+    out.push({ start: ((+h * 60 + +m) * 60 + +sec) * 1000 + +ms, text: lines.slice(2).join('\n') });
+  }
+  return out;
+}
+function finish(job, st) {
+  const sm = job.summary || (st && st.summary);
+  if (sm) summarize({ ...sm, cues: sm.cues || job.cues, unresolved: sm.unresolved, vlm_used: sm.vlm_used });
+  const r = $('#result'); r.innerHTML = '';
+  if (job.status !== 'done') return;
+  const b = document.createElement('button'); b.type = 'button';
+  b.className = 'inline-flex items-center gap-2 rounded-md bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500';
+  b.innerHTML = ICON.download + `<span>Download ${job.stem}.srt</span>`; b.addEventListener('click', () => download(job)); r.appendChild(b);
+  if (job.serverId) { const a = document.createElement('a'); a.href = `/api/jobs/${job.serverId}/report`; a.className = 'text-sm text-sky-700 hover:underline dark:text-sky-400'; a.textContent = 'report (JSON, 1 h)'; r.appendChild(a); }
+  if (job.stored === false) { const w = document.createElement('span'); w.className = 'text-sm text-amber-600 dark:text-amber-400'; w.textContent = 'browser storage is full – download now, the server copy expires in an hour'; r.appendChild(w); }
+}
+
 /* ---------- log & progress ---------- */
-const t0 = { start: 0 };
-function say(line) {
-  const l = $('#log');
-  const t = t0.start ? ((Date.now() - t0.start) / 1000).toFixed(1).padStart(6) + 's  ' : '';
-  l.textContent += t + line + '\n'; l.scrollTop = l.scrollHeight;
+function say(st, line, visible) {
+  const t = st.start ? ((Date.now() - st.start) / 1000).toFixed(1).padStart(6) + 's  ' : '';
+  st.log.push(t + line);
+  if (visible) { const l = $('#log'); l.textContent += (l.textContent ? '\n' : '') + t + line; l.scrollTop = l.scrollHeight; }
 }
 function describe(e) {
   switch (e.event) {
@@ -184,22 +339,27 @@ function describe(e) {
     default: return e.event;
   }
 }
-const prog = { total: 0, resolved: 0, vlmUsed: 0, vlmBudget: null, phase: '' };
-function progressUpdate(e) {
-  if (e.cues) prog.total = e.cues;
-  if (e.resolved !== undefined) prog.resolved = e.resolved;
-  if (e.vlm_used !== undefined) prog.vlmUsed = e.vlm_used;
-  if (e.vlm_budget !== undefined) prog.vlmBudget = e.vlm_budget;
-  if (e.event === 'probe') prog.phase = e.mode === 'exact' ? 'reading from memory' : 'learning the font';
-  if (e.event === 'round') prog.phase = `round ${e.round}: ${e.unresolved} cues still unresolved`;
-  if (e.event === 'done') { prog.phase = 'done'; prog.resolved = prog.total; }
-  if (e.event === 'error') prog.phase = 'failed';
-  const pct = prog.total ? Math.round(100 * prog.resolved / prog.total) : 0;
+function applyProgress(st, e) {
+  const p = st.prog;
+  if (e.cues) p.total = e.cues;
+  if (e.resolved !== undefined) p.resolved = e.resolved;
+  if (e.vlm_used !== undefined) p.vlmUsed = e.vlm_used;
+  if (e.vlm_budget !== undefined) p.vlmBudget = e.vlm_budget;
+  if (e.event === 'queued') p.phase = e.position > 1 ? `queued at position ${e.position}` : 'queued';
+  if (e.event === 'started') p.phase = 'starting';
+  if (e.event === 'probe') p.phase = e.mode === 'exact' ? 'reading from memory' : 'learning the font';
+  if (e.event === 'round') p.phase = `round ${e.round}: ${e.unresolved} cues still unresolved`;
+  if (e.event === 'done') { p.phase = 'done'; p.resolved = p.total; }
+  if (e.event === 'error') p.phase = 'failed';
+}
+function paintProgress(st, job) {
+  const p = st.prog, done = job.status === 'done';
+  const pct = p.total ? Math.round(100 * (done ? p.total : p.resolved) / p.total) : 0;
   const fill = $('#fill'); fill.style.width = pct + '%';
-  fill.classList.toggle('bg-emerald-500', e.event === 'done'); fill.classList.toggle('bg-sky-500', e.event !== 'done');
-  const secs = t0.start ? Math.round((Date.now() - t0.start) / 1000) : 0;
-  $('#pleft').textContent = `${prog.resolved} / ${prog.total} cues (${pct}%) – ${prog.phase}`;
-  $('#pright').textContent = (prog.vlmBudget ? `${prog.vlmUsed} / ${prog.vlmBudget} vision requests · ` : prog.vlmUsed ? `${prog.vlmUsed} vision requests · ` : '') + `${secs}s`;
+  fill.classList.toggle('bg-emerald-500', done); fill.classList.toggle('bg-sky-500', !done);
+  const secs = done && job.summary && job.summary.seconds ? job.summary.seconds : st.start ? Math.round((Date.now() - st.start) / 1000) : 0;
+  $('#pleft').textContent = `${done ? p.total : p.resolved} / ${p.total} cues (${pct}%) – ${done ? 'done' : p.phase}`;
+  $('#pright').textContent = (p.vlmBudget ? `${p.vlmUsed} / ${p.vlmBudget} vision requests · ` : p.vlmUsed ? `${p.vlmUsed} vision requests · ` : '') + `${secs}s`;
 }
 
 /* ---------- transcript ---------- */
@@ -207,7 +367,7 @@ const rows = new Map();
 const hms = ms => { const s = Math.floor(ms / 1000); return `${String(Math.floor(s / 3600)).padStart(2, '0')}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
 const srcKind = s => s === 'nocr' || s === 'nocr-arbitrated' ? 'memory' : s === 'fallback' ? 'unresolved' : 'vision';
 const dotClass = { memory: 'bg-zinc-400', vision: 'bg-sky-500', unresolved: 'bg-amber-500' };
-function transcriptAdd(items) {
+function transcriptAdd(items, flash = true) {
   const box = $('#transcript'); $('#tbox').hidden = false;
   const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
   for (const c of items) {
@@ -219,12 +379,12 @@ function transcriptAdd(items) {
       box.insertBefore(row, after);
     }
     const kind = srcKind(c.src);
-    row.className = 'flash grid grid-cols-[4.6em_1fr_auto] items-start gap-2 px-3 py-1';
+    row.className = (flash ? 'flash ' : '') + 'grid grid-cols-[4.6em_1fr_auto] items-start gap-2 px-3 py-1';
     row.innerHTML = `<span class="pt-0.5 font-mono text-xs tabular-nums text-zinc-500">${hms(c.start)}</span>
       <span class="whitespace-pre-wrap ${kind === 'unresolved' ? 'text-amber-600 dark:text-amber-400' : ''}"></span>
       <span class="mt-1.5 inline-block h-2 w-2 rounded-full ${dotClass[kind]}" title="${kind}"></span>`;
     row.children[1].textContent = c.text.replace(/<\/?[biu]>/g, '');
-    setTimeout(() => row.classList.remove('flash'), 1500);
+    if (flash) setTimeout(() => row.classList.remove('flash'), 1500);
   }
   if (stick) box.scrollTop = box.scrollHeight;
 }
@@ -242,7 +402,7 @@ function drawGlyph(c) {
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (bits[y * w + x]) ctx.fillRect(x, y, 1, 1);
 }
 const glyphEls = new Map();
-function glyphAdd(items, known, pending) {
+function glyphAdd(items, known, pending, flash = true) {
   $('#gbox').hidden = false;
   for (const g of items) {
     let el = glyphEls.get(g.key);
@@ -253,21 +413,19 @@ function glyphAdd(items, known, pending) {
       box.appendChild(el);
     }
     const scale = 32 / g.h;
-    el.className = 'flash flex items-center gap-1.5 rounded-md border border-zinc-200 px-1.5 py-1 dark:border-zinc-800';
+    el.className = (flash ? 'flash ' : '') + 'flex items-center gap-1.5 rounded-md border border-zinc-200 px-1.5 py-1 dark:border-zinc-800';
     el.title = `${g.n}× in this file`;
     el.innerHTML = `<canvas class="glyph text-zinc-800 dark:text-zinc-200" width="${g.w}" height="${g.h}" style="height:32px;width:${Math.round(g.w * scale)}px;image-rendering:pixelated" data-w="${g.w}" data-h="${g.h}"></canvas>
       <span class="${g.style.includes('i') ? 'italic' : ''} ${g.style.includes('b') ? 'font-bold' : ''}"></span>
       <span class="text-[10px] text-zinc-400">${g.n}</span>`;
     el.children[1].textContent = g.label;
     const c = el.querySelector('canvas'); c.dataset.bits = g.bits; drawGlyph(c);
-    setTimeout(() => el.classList.remove('flash'), 1500);
+    if (flash) setTimeout(() => el.classList.remove('flash'), 1500);
   }
   $('#gnew-n').textContent = $('#gnew').querySelectorAll('canvas').length + ' shapes';
   $('#gknown-n').textContent = $('#gknown').querySelectorAll('canvas').length + ' shapes';
   $('#gpending').textContent = pending ? `${pending} shapes in this file are not yet confirmed (unknown or seen only once).` : '';
 }
-
-/* ---------- summary & run ---------- */
 function summarize(e) {
   const by = e.by_source || {};
   const nocr = (by.nocr || 0) + (by['nocr-arbitrated'] || 0);
@@ -278,44 +436,89 @@ function summarize(e) {
   const tail = bad ? `${bad} cues contain unknown glyphs (�) – search the file for that character` : 'every cue resolved';
   $('#summary').innerHTML = `<span class="${bad ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}">${tail}.</span> ${parts.join(', ')}.`;
 }
-function reset() {
-  $('#idle').hidden = true; $('#progress').hidden = false; $('#logbox').open = true;
-  $('#result').innerHTML = ''; $('#summary').innerHTML = ''; $('#log').textContent = '';
-  rows.clear(); $('#transcript').innerHTML = ''; $('#tbox').hidden = true;
-  glyphEls.clear(); $('#gnew').innerHTML = '<span class="empty text-zinc-500">none so far</span>'; $('#gknown').innerHTML = ''; $('#gpending').textContent = ''; $('#gbox').hidden = true;
-  Object.assign(prog, { total: 0, resolved: 0, vlmUsed: 0, vlmBudget: null, phase: 'preparing…' });
-}
-$('#go').addEventListener('click', async () => {
-  $('#go').disabled = true; reset(); t0.start = Date.now();
-  const fd = new FormData(); fd.append('idx', idx); fd.append('sub', sub);
-  say(`uploading ${idx.name} (${(idx.size / 1024).toFixed(0)} KB) and ${sub.name} (${(sub.size / 1048576).toFixed(1)} MB)…`);
-  const r = await fetch('/api/jobs', { method: 'POST', body: fd });
-  if (!r.ok) {
-    const t = await r.json().catch(() => null);
-    const why = t && t.detail ? t.detail
-      : r.status === 413 ? 'the upload was rejected as too large before it reached the converter (a reverse-proxy limit, not this app)'
-      : r.status === 429 ? 'too many jobs from your address; try again later'
-      : r.status >= 500 ? 'the server is unavailable right now (' + r.status + ')'
-      : 'HTTP ' + r.status;
-    say('rejected: ' + why); prog.phase = 'rejected'; progressUpdate({}); $('#go').disabled = false; return;
-  }
-  const { id } = await r.json();
-  const es = new EventSource(`/api/jobs/${id}/events`);
-  es.onmessage = m => {
-    const e = JSON.parse(m.data);
-    if (e.event === 'cues') { transcriptAdd(e.items); progressUpdate(e); return; }
-    if (e.event === 'glyphs') { glyphAdd(e.items, e.known, e.pending); return; }
-    say(describe(e)); progressUpdate(e);
-    if (e.event === 'done') {
-      es.close(); summarize(e); $('#logbox').open = false;
-      $('#result').innerHTML = `<a class="rounded-md bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500" href="/api/jobs/${id}/srt">Download ${idx.name.replace(/\.idx$/i, '.srt')}</a>
-        <a class="text-sm text-sky-700 hover:underline dark:text-sky-400" href="/api/jobs/${id}/report">report (JSON)</a>`;
-      $('#go').disabled = false;
-    } else if (e.event === 'error') { es.close(); $('#go').disabled = false; }
-  };
-  es.onerror = () => { say('connection lost; the job continues – reload the page and check again'); es.close(); $('#go').disabled = false; };
-});
 
+/* ---------- runner: one job at a time ---------- */
+$('#go').addEventListener('click', () => {
+  const job = { id: 'j' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), stem: idx.name.replace(/\.idx$/i, ''),
+                cues: 0, created: Date.now(), status: 'pending', serverId: null, summary: null, error: null };
+  pendingFiles[job.id] = { idx, sub };
+  jobs.push(job); saveJobs(); newState(job);
+  idx = sub = null; $('#chosen').textContent = ''; $('#go').disabled = true;
+  if (!pinned) select(job.id); else renderQueue();
+  pump();
+});
+function pump() {
+  if (jobs.some(j => j.status === 'queued' || j.status === 'running')) return;
+  const job = jobs.find(j => j.status === 'pending' && pendingFiles[j.id]);
+  if (job) submit(job);
+}
+async function submit(job) {
+  const st = live[job.id] || newState(job); st.start = Date.now();
+  const f = pendingFiles[job.id]; const fd = new FormData(); fd.append('idx', f.idx); fd.append('sub', f.sub);
+  job.status = 'queued'; saveJobs(); renderQueue();
+  const vis = () => selectedId === job.id;
+  say(st, `uploading ${f.idx.name} (${(f.idx.size / 1024).toFixed(0)} KB) and ${f.sub.name} (${(f.sub.size / 1048576).toFixed(1)} MB)…`, vis());
+  if (vis()) { $('#logbox').open = true; paintProgress(st, job); }
+  let r;
+  try { r = await fetch('/api/jobs', { method: 'POST', body: fd }); } catch (e) { r = { ok: false, status: 0 }; }
+  if (!r.ok) {
+    const t = r.json ? await r.json().catch(() => null) : null;
+    job.error = t && t.detail ? t.detail
+      : r.status === 413 ? 'upload rejected as too large before it reached the converter (a reverse-proxy limit)'
+      : r.status === 429 ? 'too many jobs from your address; retry later'
+      : r.status === 0 ? 'network error' : r.status >= 500 ? `server unavailable (${r.status})` : 'HTTP ' + r.status;
+    job.status = 'rejected'; saveJobs(); say(st, 'rejected: ' + job.error, vis()); if (vis()) select(job.id); else renderQueue();
+    return;
+  }
+  const info = await r.json();
+  job.serverId = info.id; job.cues = info.cues; st.prog.total = info.cues; saveJobs(); renderQueue();
+  attach(job);
+}
+function attach(job) {
+  const st = live[job.id] || newState(job);
+  const es = new EventSource(`/api/jobs/${job.serverId}/events`); st.es = es;
+  es.onmessage = m => handleEvent(job, st, JSON.parse(m.data));
+  es.onerror = () => { es.close(); st.es = null; setTimeout(() => resumeOne(job), 3000); };   // reconnect via status check
+}
+async function handleEvent(job, st, e) {
+  const vis = selectedId === job.id;
+  if (e.event === 'cues') { for (const c of e.items) st.cues.set(c.i, c); applyProgress(st, e); if (vis) { transcriptAdd(e.items); paintProgress(st, job); } return; }
+  if (e.event === 'glyphs') { for (const g of e.items) st.glyphs.set(g.key, g); st.pending = e.pending; if (vis) glyphAdd(e.items, e.known, e.pending); return; }
+  say(st, describe(e), vis); applyProgress(st, e);
+  if (e.event === 'started') { job.status = 'running'; saveJobs(); renderQueue(); }
+  if (vis) paintProgress(st, job);
+  if (e.event === 'done') { if (st.es) st.es.close(); await complete(job, st, e); }
+  else if (e.event === 'error') { if (st.es) st.es.close(); job.status = 'error'; job.error = e.message; saveJobs(); renderQueue(); if (vis) select(job.id); pump(); }
+}
+async function complete(job, st, e) {
+  let srt = null;
+  try { const r = await fetch(`/api/jobs/${job.serverId}/srt`); if (r.ok) srt = await r.text(); } catch (err) {}
+  if (srt === null) { job.status = 'lost'; job.error = 'result could not be fetched'; saveJobs(); renderQueue(); pump(); return; }
+  const src = Array.from({ length: job.cues }, (_, i) => { const c = st.cues.get(i); return !c ? 'm' : c.src === 'fallback' ? 'u' : srcKind(c.src) === 'vision' ? 'v' : 'm'; }).join('');
+  job.summary = { by_source: e.by_source, unresolved: e.unresolved || 0, vlm_used: e.vlm_used || 0, seconds: e.seconds, cues: job.cues };
+  st.summary = job.summary; storeResult(job, srt, src);
+  job.status = 'done'; delete pendingFiles[job.id]; saveJobs(); renderQueue();
+  if (selectedId === job.id) { pinned = false; paintProgress(st, job); finish(job, st); $('#logbox').open = false; }
+  pump();
+}
+async function resumeOne(job) {
+  let r; try { r = await fetch(`/api/jobs/${job.serverId}`); } catch (e) { r = null; }
+  const st = live[job.id] || newState(job);
+  if (!r) {                    // server unreachable: keep trying for a while before giving up
+    st.retries = (st.retries || 0) + 1;
+    if (st.retries < 40) { setTimeout(() => resumeOne(job), 5000); return; }
+  }
+  if (!r || r.status === 404) { job.status = 'lost'; job.error = 'the server no longer has this job'; saveJobs(); renderQueue(); pump(); return; }
+  st.retries = 0;
+  const info = await r.json();
+  if (info.status === 'error') { job.status = 'error'; job.error = info.error; saveJobs(); renderQueue(); pump(); }
+  else attach(job);          // running, queued or done: the server replays every event, ending with 'done'
+}
+
+/* ---------- start ---------- */
+for (const job of jobs) if (job.status === 'queued' || job.status === 'running') resumeOne(job);
+renderQueue();
+if (jobs.length) select(jobs[jobs.length - 1].id);
 fetch('/api/stats').then(r => r.json()).then(s => {
   $('#fonts').textContent = s.fonts;
   $('#limits').textContent = `${s.limits.jobs_per_hour} jobs per hour, ${s.limits.vlm_per_day} vision-model requests per day, at most ${s.limits.max_vlm_cues} per job, files up to ${s.limits.max_cues} cues`;

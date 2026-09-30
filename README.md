@@ -146,6 +146,9 @@ port 8000: drop the `.idx` and `.sub`, watch the progress, download the SRT. Des
   daily allowance is used up its jobs still run, teacher-less; per job `VTS_MAX_VLM_CUES` (300);
 - input caps: `.sub` ≤ `VTS_MAX_SUB_MB` (64), ≤ `VTS_MAX_CUES` (3000) cues; job timeout 15 min;
 - `VTS_TRUST_PROXY=1` takes the client address from `X-Forwarded-For` (only behind your own proxy).
+- the page keeps a personal queue in the browser's localStorage: several tracks can be added and are
+  submitted one after another; each finished SRT is fetched and stored client-side, so it can be
+  downloaded again after the server's copy expired. Nothing about users is stored on the server.
 
 Reverse proxy (nginx on another host, TLS terminated there):
 
