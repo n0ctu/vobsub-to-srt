@@ -315,6 +315,7 @@ class GlyphDB:
             db.pair_gaps[k] = list(c)
         # legacy DBs kept words/sources inline: picked up here, moved to the sidecar on save
         db.words = {k: Counter(v) for k, v in d.get("words", {}).items()}
+        db.dirty = bool(d.get("words") or d.get("learned_sources"))   # rewrite once to migrate them out
         return db
 
     def attach_private(self, private_dir: Path, word_memory: bool) -> None:

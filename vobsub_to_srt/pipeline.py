@@ -160,7 +160,15 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
     db, cov, probe_mode = probe(opts.db_dir, keyfreq, sample_glyph, opts.min_probe_coverage, charset)
     log.info("using DB %s (%s, coverage %.1f%%)", db.path.name if db.path else db.name, probe_mode, 100 * cov)
     db.attach_private(opts.private_dir, opts.word_memory)
-    db.dirty = True     # rewrite once: migrates legacy inline words/sources out of the DB file
+    # Geometry votes accumulate across files: what the DB already holds plus this file's votes.
+    # (Decisions compare the two counts, so re-running a file cannot flip them.) The votes are
+    # only persisted together with real learning; a pure recognition run leaves the DB file untouched.
+    prev_geo = {k: [list(v.geo_italic), list(v.geo_bold)] for k, sh in db.shapes.items() for v in sh.variants[:1]}
+    for key in set(geo) | set(geo_b):
+        pi, pb = prev_geo.get(key, ([0, 0], [0, 0]))
+        gi, gb = geo.get(key, [0, 0]), geo_b.get(key, [0, 0])
+        geo[key] = [pi[0] + gi[0], pi[1] + gi[1]]
+        geo_b[key] = [pb[0] + gb[0], pb[1] + gb[1]]
 
     def apply_geo() -> None:
         """Italic/bold come from glyph geometry (word slant, stroke width); VLM tags only break ties."""
