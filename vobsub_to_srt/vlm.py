@@ -24,12 +24,18 @@ log = logging.getLogger(__name__)
 LANG_NAMES = {"en": "English", "de": "German", "fr": "French", "es": "Spanish", "it": "Italian"}
 
 
-ENV_KEYS = ("DEEPSEEK_BASE_URL", "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL")
+ENV_KEYS = ("VLM_BASE_URL", "VLM_API_KEY", "VLM_MODEL")
+_LEGACY = {"VLM_BASE_URL": "DEEPSEEK_BASE_URL", "VLM_API_KEY": "DEEPSEEK_API_KEY", "VLM_MODEL": "DEEPSEEK_MODEL"}
+
+
+def env(key: str) -> str | None:
+    """VLM_* setting, falling back to the older DEEPSEEK_* name."""
+    return os.environ.get(key) or os.environ.get(_LEGACY.get(key, key))
 
 
 def endpoint_configured() -> bool:
     load_env()
-    return all(os.environ.get(k) for k in ENV_KEYS)
+    return all(env(k) for k in ENV_KEYS)
 
 
 def load_env(path: Path = Path(".env")) -> None:
@@ -105,13 +111,13 @@ class VLMClient:
                  base_url: str | None = None, api_key: str | None = None, model: str | None = None,
                  timeout: float = 60.0, max_attempts: int = 4, use_tool: bool = False):
         load_env()
-        missing = [k for k in ENV_KEYS if not os.environ.get(k)]
+        missing = [k for k in ENV_KEYS if not env(k)]
         if missing and not (base_url and api_key and model):
             raise SystemExit(f"VLM endpoint not configured: set {', '.join(missing)} in .env "
                              "(see .env.example); any OpenAI-compatible vision model works")
-        self.base_url = (base_url or os.environ["DEEPSEEK_BASE_URL"]).rstrip("/")
-        self.api_key = api_key or os.environ["DEEPSEEK_API_KEY"]
-        self.model = model or os.environ["DEEPSEEK_MODEL"]
+        self.base_url = (base_url or env("VLM_BASE_URL")).rstrip("/")
+        self.api_key = api_key or env("VLM_API_KEY")
+        self.model = model or env("VLM_MODEL")
         self.use_tool = use_tool
         # answer cache: in memory for this client's lifetime (default: nothing of the subtitle text
         # touches a disk), or on disk under cache_dir (CLI --diagnostics: re-runs are free and

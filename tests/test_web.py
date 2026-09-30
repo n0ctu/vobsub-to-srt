@@ -29,9 +29,7 @@ def fake_run_job_sync(source, config, progress):
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "DATA", tmp_path)
     monkeypatch.setattr(web.jobmod, "run_job_sync", fake_run_job_sync)
-    monkeypatch.setattr(web, "stats_store", web.Stats(tmp_path / "stats.json"))
     web.jobs.clear()
-    web.limiter.__init__()
     with TestClient(web.app) as c:
         yield c
 
@@ -121,7 +119,17 @@ def test_usage_stats_count_without_storing_users(client):
     u = client.get("/api/stats").json()["usage"]
     assert u["jobs"] == 2 and u["cues"] == 10 and u["memory_cues"] == 8 and u["vision_cues"] == 2
     assert u["vlm_requests"] == 6 and u["languages"] == {"en": 2} and u["users"] == 1   # same address, one user
-    saved = json.loads((web.DATA / "stats.json").read_text())
-    assert saved["jobs"] == 2 and "users" in saved and "testclient" not in (web.DATA / "stats.json").read_text()
+    assert (web.DATA / "stats.sqlite").exists()
+    assert b"testclient" not in (web.DATA / "stats.sqlite").read_bytes()          # only salted hashes
+    again = web.Store(web.DATA / "stats.sqlite").snapshot()                        # survives a restart
+    assert again["jobs"] == 2 and again["users"] == 1
     g = client.get("/api/stats").json()["glyphs"]
     assert set(g) == {"fonts", "fonts_learned_here", "shapes", "italic_shapes", "fused_shapes"}
+
+
+def test_limits_persist_across_restart(client, monkeypatch):
+    monkeypatch.setattr(web, "JOBS_PER_HOUR", 1)
+    assert submit(client).status_code == 200
+    fresh = web.Store(web.DATA / "stats.sqlite")                                   # a new process
+    assert fresh.check_job("testclient") is not None                              # still rate limited
+    assert fresh.vlm_left("testclient") == web.VLM_PER_DAY - 3 or fresh.vlm_left("testclient") == web.VLM_PER_DAY

@@ -1,43 +1,42 @@
-# vobsub-to-srt
+# VobSub to SRT Converter
 
-**Try it online: [vts.canihaz.cloud](https://vts.canihaz.cloud)** — drop a `.idx`/`.sub` pair, get the `.srt`.
-Every font learned there becomes part of the shared glyph memory in this repository.
+VobSub (`.idx`/`.sub`) to SRT. Subtitle glyphs are read by deterministic bitmap matching (in the spirit of Subtitle Edit's binary image compare). A vision LLM (any OpenAI-compatible endpoint, developed against DeepSeek) acts as the *teacher* for glyphs the database doesn't know yet.
+A new font costs a few dozen VLM calls. Later files with the same font need none.
 
-VobSub (`.idx`/`.sub`) → SRT. Subtitle glyphs are read by deterministic bitmap matching
-(in the spirit of Subtitle Edit's binary image compare); a vision LLM (any OpenAI-compatible
-endpoint, developed against DeepSeek) acts as the *teacher* for glyphs the database doesn't know yet.
-A new font costs a few dozen VLM calls; later files with the same font need none.
+## Online Version
 
-## Setup
+**[vts.canihaz.cloud](https://vts.canihaz.cloud)**
+
+Try it online. Drop a `.idx`/`.sub` pair, get the `.srt`. Uploads are never stored on disk. Only new glyphs learned from new sources get automatically added to the online tools shared glyph memory and get eventually added to this repository. 
+
+
+## Local Setup
 
 ```sh
 uv sync --locked                     # reproducible venv (.venv) from uv.lock, Python 3.12
-cp .env.example .env                 # then fill in the VLM endpoint (below)
+cp .env.example .env                 # then optionally fill in the VLM endpoint (below)
 ```
 
-The teacher is any OpenAI-compatible chat endpoint with a vision model. `.env` (never committed):
+The teacher is any OpenAI-compatible chat endpoint with a vision model. `.env`:
 
 ```
-DEEPSEEK_BASE_URL=https://api.example.com/v1   # base URL of the /chat/completions endpoint
-DEEPSEEK_API_KEY=...
-DEEPSEEK_MODEL=...                             # a model that accepts image input
+VLM_BASE_URL=https://api.example.com/v1   # base URL of the /chat/completions endpoint
+VLM_API_KEY=...
+VLM_MODEL=...                             # a model that accepts image input
 ```
 
-Hunspell dictionaries for the lexicon gate are downloaded on first use into `dictionaries/`
-(`--dict-dir`, `--no-dict-download`); system dictionaries in `/usr/share/hunspell` are used too.
+Hunspell dictionaries for the lexicon gate are downloaded on first use into `dictionaries/` (`--dict-dir`, `--no-dict-download`); system dictionaries in `/usr/share/hunspell` are used too.
 They are not bundled because of their per-language licenses.
 
 ## Usage
 
 ```sh
 uv run vobsub-to-srt Subs/*.idx                   # hybrid (default)
-uv run vobsub-to-srt --mode nocr-only X.idx       # never call the API; unknown glyphs become �
+uv run vobsub-to-srt --mode nocr-only X.idx       # never call the VLM API; unknown glyphs become �
 uv run vobsub-to-srt --mode vlm-only X.idx        # VLM for every cue (reference / comparison)
 ```
 
-Without a VLM endpoint configured, the default mode runs teacher-less: fonts in the glyph memory
-are read as usual, and a file whose font is unknown is written with `�` for the unknown glyphs plus a
-warning that a VLM would be needed to learn it. So a clone works offline for the shipped baseline fonts.
+Without a VLM endpoint configured, the default mode runs teacher-less: fonts in the glyph memory are read as usual, and a file whose font is unknown is written with `�` for the unknown glyphs plus a warning that a VLM would be needed to learn it. So a clone works **offline** for the shipped baseline fonts.
 
 | Option | Default | |
 |---|---|---|
@@ -56,29 +55,15 @@ warning that a VLM would be needed to learn it. So a clone works offline for the
 | `--glyph-memory-dir`, `--word-memory-dir` | `glyph-memory/`, `word-memory/` | |
 | `--out-dir`, `--cache-dir`, `--debug-dir` | `out/`, off, off | `--cache-dir`/`--debug-dir` switch on that part of the diagnostics with a custom location |
 
-Outputs: `out/<name>.srt`; `out/<name>.report.json` (VLM calls, where each cue's text came from,
-flagged cues, failures). **Memory by default:** the pipeline runs entirely in memory; the VLM answer
-cache lives in the process and nothing of the subtitles is written to disk apart from these two
-outputs. `--diagnostics` adds the on-disk answer cache, `debug/` images of unreadable cues and the raw
-VLM answers in the report (useful for QC sheets and cheap re-runs).
+Outputs: `out/<name>.srt`; `out/<name>.report.json` (VLM calls, where each cue's text came from, flagged cues, failures). 
 
-**Baseline fonts.** `glyph-memory/` is tracked in the repo and ships glyph memories for fonts
-already learned (currently two common sans-serif subtitle fonts at 1080p, upright and italic). A
-clone therefore reads those fonts without any VLM (`--mode nocr-only` works offline for them). New
-fonts you process are written next to them; since a glyph memory contains no subtitle text (see
-below), please contribute them back with a pull request to strengthen the baseline.
+**Baseline fonts.** `glyph-memory/` is tracked in the repo and ships glyph memories for fonts already learned (currently two common sans-serif subtitle fonts at 1080p, upright and italic). A clone therefore reads those fonts without any VLM (`--mode nocr-only` works offline for them). On-the-fly VLM learned glyph-sets are automatically added there. Feel free to submit them as a PR so other users can use them as well! 
 
-**Glyph memory vs. word memory.** `glyph-memory/<name>.json` holds one learned font: glyph bitmaps
-(including fused letter pairs such as `rt`), their labels, the gap model and multi-glyph characters.
-Names are random (e.g. `calm-sable-4e11`) and nothing in it is subtitle content, so it can be shared
-and reused by anyone. `word-memory/<name>.json` is private: hashes of the cue images learned from (so
-re-runs never count the same image twice) and, with `--word-memory`, the words already resolved per
-glyph sequence (e.g. names), which helps with pixel-identical `I`/`l` on your own library.
+**Glyph memory vs. word memory.** `glyph-memory/<name>.json` holds one learned glyph-set: glyph bitmaps (including fused letter pairs such as `rt`), their labels, the gap model and multi-glyph characters. `word-memory/<name>.json` is private: hashes of the cue images learned from and, with `--word-memory`, the words already resolved per glyph sequence (e.g. names), which helps with pixel-identical `I`/`l` on your own library.
 
 ## How it works
 
-1. **Decode** `.idx/.sub` (MPEG-PS demux, SPU RLE) and isolate the glyph fill colour
-   (the colour with the fewest edges facing other colours) into a binary mask.
+1. **Decode** `.idx/.sub` (MPEG-PS demux, SPU RLE) and isolate the glyph fill colour (the colour with the fewest edges facing other colours) into a binary mask.
 2. **Segment** lines and glyphs (connected components; i-dots, umlauts, `:` `;` `!` `?` merged;
    touching letters become multi-character glyphs such as `rt`). Underline strokes are detected and
    removed before splitting.
@@ -100,8 +85,8 @@ glyph sequence (e.g. names), which helps with pixel-identical `I`/`l` on your ow
    cue is re-read, against the final DB. On the test material the VLM "autocorrects" (*canvass →
    canvas*, *quit → quitt*) and normalizes `O´Neil` to `O'Neil`; the glyph DB keeps the literal text.
 6. **Pixel-identical `I`/`l`** (e.g. Arial: both are the same vertical bar): with `--word-memory`,
-   a word seen before with the exact glyph sequence decides; otherwise the lexicon gate: (1) wordfreq — a clear
-   frequency lead, or the only reading that is a word; (2) Hunspell — the only valid spelling;
+   a word seen before with the exact glyph sequence decides; otherwise the lexicon gate: (1) wordfreq - a clear
+   frequency lead, or the only reading that is a word; (2) Hunspell - the only valid spelling;
    (3) only if no reading is a known word (names, invented words): the only reading without case
    changes inside a word part (`MILLER`, not `MlLLER`). Otherwise the VLM decides. The same gate
    overrides the VLM's own I/l reading on such glyphs.
@@ -113,69 +98,33 @@ glyph sequence (e.g. names), which helps with pixel-identical `I`/`l` on your ow
 9. **Spaces**: additive side-bearing model (letter gap(a,b) ≈ R[a] + L[b]; a space adds a learned
    offset). Ambiguous gaps go to the VLM.
 
-**Character simplification** (default; `--keep-special-chars` turns it off): everything the VLM returns
-is folded before it is learned, compared or written — apostrophes/single quotes `´ ` ’ ‘ ‚ ′ ‹ ›` → `'`,
-double quotes `„ “ ” « » ″` → `"`, dashes `‐ – — ― −` → `-`, `…` → `...`, ligatures `ﬁ ﬂ ﬀ` → letters,
-non-breaking/thin spaces → space, soft hyphens and zero-width characters removed, Unicode NFC.
-The VLM is inconsistent between these variants (it wrote `O'Neil` for `O´Neil` in 3 of 4 cues);
-folded, they are one class and cannot outvote each other. The prompt stays literal. Each glyph DB
-records its character set, so simplified and literal DBs (`*.literal.json`) never mix.
+**Character simplification** (default; `--keep-special-chars` turns it off): everything the VLM returns is folded before it is learned, compared or written. Apostrophes/single quotes `´ ’ ‘ ‚ ′ ‹ ›` to `'`, double quotes `„ “ ” « » ″` to `"`, dashes `‐ – — ― −` to `-`, `…` to `...`, ligatures `ﬁ ﬂ ﬀ` to letters, non-breaking/thin spaces to space, soft hyphens and zero-width characters removed, Unicode NFC.
 
-Prompts live in `vobsub_to_srt/prompts.py`. The transcription prompt demands a literal,
-letter-by-letter reading (typos kept); a planned spell-check pass will get its own prompt.
+Prompts live in `vobsub_to_srt/prompts.py`. The transcription prompt demands a literal, letter-by-letter reading (typos kept); a planned optional spell-check pass will get its own prompt.
 
 ## Docker
 
 ```sh
-mkdir -p data/in && cp .env.example .env            # endpoint optional: without it, teacher-less
-docker compose run --rm vobsub-to-srt /data/in/movie.idx      # -> data/out/movie.srt
+mkdir -p data/in && cp .env.example .env                      # endpoint optional: without it, teacher-less
+docker compose --profile cli run --rm vobsub-to-srt /data/in/movie.idx   # -> data/out/movie.srt
 ```
 
-The image `ghcr.io/n0ctu/vobsub-to-srt:latest` is built by CI from `main` (tags `vX.Y.Z` from
-releases). All state lives in the `data/` volume: `glyph-memory/` is seeded from the image's baseline on
-first start and grows from there, `word-memory/`, `dictionaries/`, `cache/` and `out/` next to it.
-`compose.yml` includes Watchtower, which pulls a new `:latest` and replaces the container automatically.
+The image `ghcr.io/n0ctu/vobsub-to-srt:latest` is built by CI from `main` (tags `vX.Y.Z` from releases). All state lives in the `data/` volume: `glyph-memory/` is seeded from the image's baseline on first start and grows from there, `word-memory/` and `dictionaries/` next to it (`out/` for CLI results). `compose.yml` includes Watchtower, which pulls a new `:latest` and replaces the container automatically.
 
-## Web app
+## Web app (self-hosting)
 
-`uv sync --extra web && uv run vobsub-to-srt-web` (or `docker compose up -d`) serves a one-page app on
-port 8000: drop the `.idx` and `.sub`, watch the progress, download the SRT. In the UI a learned font
-is called a *glyph set*, since its entries are shapes that may span several characters. Design:
+The same image runs the web app: `docker compose up -d` starts it on the host port set in `compose.yml` (default `127.0.0.1:8787`; bind a private address if a reverse proxy on another host terminates TLS, and give it `client_max_body_size 80m`, `proxy_read_timeout 900s` and `proxy_buffering off`). Without Docker: `uv sync --extra web && uv run vobsub-to-srt-web`.
 
-- one worker converts jobs one after another (it is the only writer of the shared glyph memory and
-  the global VLM throttle); the page shows the queue position;
-- uploads and results live under `<data>/jobs/` and are deleted after `VTS_JOB_TTL` (1 h); the
-  uploaded files are removed as soon as the job ends; the VLM cache is per job, so no subtitle text
-  survives a job — only the glyph memory grows;
-- per-IP limits: `VTS_JOBS_PER_HOUR` (20) and `VTS_VLM_PER_DAY` (1000 VLM requests); when a client's
-  daily allowance is used up its jobs still run, teacher-less; `VTS_MAX_VLM_CUES` caps a single job
-  (default 0 = only the daily allowance applies);
-- input caps: `.sub` ≤ `VTS_MAX_SUB_MB` (64), ≤ `VTS_MAX_CUES` (6000) cues; job timeout 15 min;
-- uploads are held in memory until their job ran and dropped afterwards; results are held in memory
-  for `VTS_JOB_TTL` (10 min) so the browser can fetch them; the VLM cache is per job and in memory. Nothing of a user's subtitles is
-  ever written to disk (the `compose.yml` tmpfs for `/tmp` is belt and braces). `VTS_MAX_QUEUE` (20)
-  bounds the memory held by waiting uploads.
-- `VTS_TRUST_PROXY=1` takes the client address from `X-Forwarded-For` (only behind your own proxy).
-- usage statistics (`/api/stats`, shown on the page): jobs, cues, memory vs. vision share, VLM
-  requests, processing time, languages, fonts and glyph shapes, persisted as plain counters in
-  `<data>/stats.json`; "users" counts distinct submitting addresses per day via a salted hash whose
-  salt lives only in memory and changes daily — no address is ever stored.
-- the page keeps a personal queue in the browser's localStorage: several tracks can be added and are
-  submitted one after another; each finished SRT is fetched and stored client-side, so it can be
-  downloaded again long after the server dropped its copy. Nothing about users is stored on the server.
+Everything a user uploads stays in memory: uploads are dropped when their job ran, results are held in memory for `VTS_JOB_TTL` (10 min) so the browser can fetch them, the VLM cache is per job. Only the shared `glyph-memory/` grows. Limits and usage statistics live in `<data>/stats.sqlite`; clients are identified by a salted hash of their address whose salt changes daily.
 
-Reverse proxy (nginx on another host, TLS terminated there):
-
-```nginx
-location / {
-    proxy_pass http://10.0.0.5:8787;            # the private address bound in compose.yml
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header Host $host;
-    client_max_body_size 80m;                   # a .sub is 5-10 MB per track
-    proxy_read_timeout 900s;                    # progress stream while a new font is learned
-    proxy_buffering off;
-}
-```
+| Variable | Default | |
+|---|---|---|
+| `VTS_DATA` | `.` (`/data` in Docker) | glyph memory, word memory, dictionaries, `stats.sqlite` |
+| `VTS_JOBS_PER_HOUR`, `VTS_VLM_PER_DAY` | 20, 1000 | limits per user; an exhausted daily allowance runs jobs teacher-less |
+| `VTS_MAX_VLM_CUES` | 0 (off) | optional cap on VLM requests per job |
+| `VTS_MAX_CUES`, `VTS_MAX_SUB_MB`, `VTS_MAX_QUEUE` | 6000, 64, 20 | input and queue caps |
+| `VTS_JOB_TTL`, `VTS_JOB_TIMEOUT` | 600, 900 | seconds |
+| `VTS_TRUST_PROXY` | 0 | `1` to take the client address from `X-Forwarded-For` (only behind your own proxy) |
 
 ## As a library / service
 
@@ -185,10 +134,7 @@ res = run_job_sync("movie.idx", JobConfig(max_vlm_cues=300), progress=print)
 res.srt, res.unresolved, res.vlm_used, res.budget_exhausted, res.report
 ```
 
-`run_job` isolates one conversion: per-job VLM cache and temp files (removed afterwards, so no
-subtitle text persists across jobs), a VLM budget, progress events (`probe`, `round`, `retry`,
-`budget_exhausted`, `done`, `no_vlm`), and an optional per-job endpoint (`JobConfig(base_url=,
-api_key=, model=)` for bring-your-own-key). Only the shared glyph memory is written.
+`run_job` converts one file entirely in memory (a path or a `VobSubData(name, idx_bytes, sub_bytes)`): per-job VLM cache, no temp files, a VLM budget, progress events (`probe`, `round`, `cues`, `glyphs`, `retry`, `budget_exhausted`, `done`, `no_vlm`), and an optional per-job endpoint (`JobConfig(base_url=, api_key=, model=)`). Only the shared glyph memory is written.
 
 ## Roadmap
 
@@ -208,18 +154,11 @@ tools/build_css.sh                                              # rebuild static
 uv run vobsub-to-srt --debug-rescale 0.6667 X.idx               # simulate another resolution
 ```
 
-Experiments (test subtitles, reference transcripts, logs) live in the git-ignored `experiments/`.
-Tests use synthetic subtitle images rendered with DejaVu/Liberation fonts; no subtitle files are needed.
-
 ## Status
 
-Verified on 1080p VobSubs of two releases (two sans-serif fonts, English and German, upright and
-italic): the output matched the images on every cue of four fully checked tracks (2,791 cues) and
-on 302 sampled cues of further episodes. Bold and underline are only tested on synthetic images.
-Other resolutions are handled through the teacher transfer (tested by downscaling). Other scripts
-than Latin are untested.
+Verified on latin 1080p VobSubs (two sans-serif fonts, English and German, upright and italic): the output matched the images on every cue of four fully checked tracks (2,791 cues) and on 302 sampled cues of further episodes. Bold and underline are only tested on synthetic images.
+Other resolutions are handled through the teacher transfer (tested by downscaling). Other scripts than Latin should work, but are untested as of the current release.
 
 ## License
 
-MIT (see `LICENSE`). Hunspell dictionaries are fetched at runtime under their own licenses and are
-not part of this repository.
+MIT (see `LICENSE`). Hunspell dictionaries are fetched at runtime under their own licenses and are not part of this repository.

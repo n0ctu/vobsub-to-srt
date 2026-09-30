@@ -22,3 +22,8 @@ out/
 debug/
 dist/
 .cache/
+
+# local notes and runtime state
+NOTES.md
+stats.json*
+stats.sqlite*
