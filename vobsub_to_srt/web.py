@@ -375,9 +375,19 @@ async def healthz():
     return {"ok": True}
 
 
+def _asset_version(name: str) -> str:
+    """Short content hash, appended to asset links so browsers never keep a stale stylesheet after
+    a deploy (the files themselves are cached for an hour)."""
+    try:
+        return hashlib.sha256((STATIC / name).read_bytes()).hexdigest()[:10]
+    except OSError:
+        return "0"
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return (STATIC / "index.html").read_text(encoding="utf-8")
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    return html.replace('href="/static/app.css"', f'href="/static/app.css?v={_asset_version("app.css")}"', 1)
 
 
 _STATIC_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml"}

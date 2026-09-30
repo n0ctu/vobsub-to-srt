@@ -101,6 +101,7 @@ def test_stats_and_index(client):
 
 
 def test_static_files(client):
+    assert 'href="/static/app.css?v=' in client.get("/").text        # cache-busting version
     r = client.get("/static/app.css")
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/css")
     assert client.get("/static/index.html").status_code == 404          # only css/js/svg

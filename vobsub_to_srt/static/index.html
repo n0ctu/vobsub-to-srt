@@ -332,9 +332,9 @@ function select(id) {
     if (st.cues.size) transcriptAdd([...st.cues.values()], false);
     if (st.glyphs.size) glyphAdd([...st.glyphs.values()], 0, st.pending || 0, false);
     if (st.summary) finish(job, st);
-  } else {                                     // from storage
+  } else {                                     // from storage (no live state: a second click must replay this branch again)
     const srt = getSrt(id);
-    paintProgress(newState(job), job);
+    const tmp = newState(job); delete live[id]; paintProgress(tmp, job);
     if (job.status === 'done') {
       if (srt !== null) { const src = getSrc(id); transcriptAdd(parseSrt(srt).map((c, i) => ({ i, start: c.start, text: c.text, src: { m: 'nocr', v: 'vlm', u: 'fallback' }[src[i]] || 'nocr' })), false); }
       finish(job, null); $('#gnote').hidden = false;
