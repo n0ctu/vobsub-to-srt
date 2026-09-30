@@ -23,18 +23,33 @@ from .names import random_db_name
 from .simplify import CHARSET_LITERAL, CHARSET_SIMPLIFIED, simplify
 from .recognize import CueResult, near_match, recognize, _decide
 from .segment import Line, bold_votes, fill_mask, italic_votes, segment
-from .srt import fmt_ts, normalize_text, write_srt
+from .srt import fmt_ts, normalize_text, render_srt
 from .vlm import VLMClient, mask_to_png
-from .vobsub import Cue, load_vobsub
+from .vobsub import Cue, load_vobsub, load_vobsub_bytes
 
 log = logging.getLogger("vobsub_to_srt")
 
 
 @dataclass
+class VobSubData:
+    """An .idx/.sub pair held in memory."""
+    name: str          # display name / output stem
+    idx: bytes
+    sub: bytes
+
+
+@dataclass
+class ProcessResult:
+    srt: str
+    report: dict
+
+
+@dataclass
 class Options:
     db_dir: Path = Path("glyph-memory")
-    out_dir: Path = Path("out")
-    debug_dir: Path | None = Path("debug")
+    out_dir: Path | None = None          # write <stem>.srt and <stem>.report.json here; None = memory only
+    debug_dir: Path | None = None        # PNGs of cues that could not be read (diagnostics)
+    diagnostics: bool = False            # keep raw VLM answers in the report
     batch_size: int = 16
     mode: str = "hybrid"                 # hybrid | vlm-only | nocr-only
     train_until: float = 0.01            # stop "training" when unknown glyph occurrences < this share
@@ -147,10 +162,19 @@ def _save_debug(opts: Options, st: CueState, tag: str) -> None:
     Image.fromarray(img).save(opts.debug_dir / f"{tag}_cue{st.cue.index:04d}.png")
 
 
-async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) -> dict:
+async def process_file(source: Path | VobSubData, client: VLMClient | None, opts: Options) -> ProcessResult:
+    """Convert one track. `source` is a path to the .idx (the .sub next to it) or the pair in memory.
+    Nothing is written to disk unless opts.out_dir / opts.debug_dir are set; the glyph memory
+    (and its private sidecar) is the only persistent state."""
     t0 = time.time()
     calls0 = (client.calls, client.cache_hits, client.throttled) if client else (0, 0, 0)
-    idx, cues = load_vobsub(idx_path, opts.track)
+    if isinstance(source, VobSubData):
+        idx, cues = load_vobsub_bytes(source.idx, source.sub, opts.track)
+        stem, display = source.name, source.name
+    else:
+        idx, cues = load_vobsub(source, opts.track)
+        stem, display = source.stem, str(source)
+    idx_path = Path(display)     # for log lines / events only
     lang = idx.tracks[opts.track].lang or "en"
     lexicon = make_lexicon(opts.lexicon, lang, download=opts.download_dicts)
     charset = CHARSET_LITERAL if opts.keep_special_chars else CHARSET_SIMPLIFIED
@@ -273,18 +297,17 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
             k -= 1
         return out[::-1]
 
-    def accepted_file(st: CueState) -> Path:
-        return client.cache_dir / f"accepted-{image_id(st.mask)}.json"
+    def accepted_key(st: CueState) -> str:
+        return f"accepted-{image_id(st.mask)}"
 
     async def vlm_cue(st: CueState, strict: bool = False) -> str:
         # the answer finally accepted for this image in an earlier run (it fit the glyphs):
         # re-runs reproduce the same text instead of re-asking a VLM that may answer differently
-        acc = accepted_file(st)
-        if not strict and acc.exists():
+        acc = None if strict else client.cache_get(accepted_key(st))
+        if acc is not None:
             client.cache_hits += 1
-            text = json.loads(acc.read_text())["text"]
-            vlm_raw[st.cue.index] = text
-            return fold(text)
+            vlm_raw[st.cue.index] = acc
+            return fold(acc)
         png = mask_to_png(st.mask, scale=3 if strict else 2)
         text, cached = await client.transcribe_ex(png, max(1, len(st.lines)), lang, strict=strict,
                                                   context=history(st) if opts.context else None)
@@ -317,10 +340,8 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
             st.text = normalize_text(text)
         lr = learn_cue(db, st.lines, text, gap_t, source=image_id(st.mask))
         apply_geo()
-        if lr.alignments and client is not None:
-            acc = accepted_file(st)
-            if not acc.exists():
-                acc.write_text(json.dumps({"text": text}, ensure_ascii=False))
+        if lr.alignments and client is not None and client.cache_get(accepted_key(st)) is None:
+            client.cache_put(accepted_key(st), text)
         if lr.alignments:
             # VLM characters (except where they contradict confirmed glyphs), geometric styles
             st.text, corrections = restyle(st.lines, lr.alignments, style_of, lexicon)
@@ -498,10 +519,9 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
     if db.dirty:
         db.save()
 
-    out = opts.out_dir / (idx_path.stem + ".srt")
-    write_srt(out, [(st.cue.start_ms, st.cue.end_ms, st.text or "") for st in states])
+    srt_text = render_srt([(st.cue.start_ms, st.cue.end_ms, st.text or "") for st in states])
     report = {
-        "file": str(idx_path), "language": lang, "charset": charset, "db": str(db.path), "probe": probe_mode, "probe_coverage": cov,
+        "file": display, "language": lang, "charset": charset, "db": str(db.path), "probe": probe_mode, "probe_coverage": cov,
         "cues": len(states), "by_source": dict(stats),
         "vlm_budget": {"max": opts.max_vlm_cues, "used": budget["used"], "exhausted": budget["exhausted"]},
         "vlm_requests": (client.calls - calls0[0]) if client else 0,
@@ -511,18 +531,23 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
         "flagged": {str(k): v for k, v in flagged.items()},
         "not_learned": {str(st.cue.index): st.notes for st in states if st.notes},
         "lexicon": lexicon.stats if lexicon else None,
-        "vlm_raw": {str(k): v for k, v in sorted(vlm_raw.items())},
         "seconds": round(time.time() - t0, 1),
     }
-    (opts.out_dir / (idx_path.stem + ".report.json")).write_text(json.dumps(report, indent=2, ensure_ascii=False))
-    log.info("%s -> %s | %s | %.1fs", idx_path.name, out, dict(stats), report["seconds"])
-    emit("done", srt=str(out), by_source=dict(stats), seconds=report["seconds"],
-         unresolved=stats.get("fallback", 0))
+    if opts.diagnostics:
+        report["vlm_raw"] = {str(k): v for k, v in sorted(vlm_raw.items())}
+    out = None
+    if opts.out_dir is not None:
+        opts.out_dir.mkdir(parents=True, exist_ok=True)
+        out = opts.out_dir / (stem + ".srt")
+        out.write_text(srt_text, encoding="utf-8")
+        (opts.out_dir / (stem + ".report.json")).write_text(json.dumps(report, indent=2, ensure_ascii=False))
+    log.info("%s -> %s | %s | %.1fs", idx_path.name, out or "(memory)", dict(stats), report["seconds"])
+    emit("done", by_source=dict(stats), seconds=report["seconds"], unresolved=stats.get("fallback", 0))
     if stats.get("fallback"):
         log.warning("%s: %d of %d cues contain glyphs this glyph memory does not know (marked %s); "
                     "configure a VLM endpoint to learn them", idx_path.name, stats["fallback"], len(states),
                     opts.placeholder)
-    return report
+    return ProcessResult(srt_text, report)
 
 
 def _select_batch(db: GlyphDB, unresolved: list[CueState], keyfreq: Counter, size: int) -> list[CueState]:

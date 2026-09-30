@@ -13,7 +13,8 @@ IDX = b"# VobSub index\nsize: 720x576\nid: en, index: 0\n" + b"".join(
     f"timestamp: 00:00:{i:02d}:000, filepos: {i:09x}\n".encode() for i in range(5))
 
 
-def fake_run_job_sync(idx_path, config, progress):
+def fake_run_job_sync(source, config, progress):
+    assert source.idx.startswith(b"# VobSub index") and isinstance(source.sub, bytes)   # in memory, no path
     progress({"event": "probe", "db": "calm-sable-0000", "mode": "exact", "coverage": 1.0})
     progress({"event": "cues", "items": [{"i": 0, "start": 0, "end": 1000, "text": "Hello", "src": "nocr"}], "resolved": 1})
     progress({"event": "glyphs", "items": [{"key": "k1", "label": "H", "w": 4, "h": 5, "bits": "8A==", "n": 3,
@@ -59,7 +60,8 @@ def test_upload_convert_download(client):
     assert [e["event"] for e in events] == ["queued", "started", "probe", "cues", "glyphs", "done"]
     assert events[3]["items"][0]["text"] == "Hello" and events[4]["items"][0]["label"] == "H"
     assert all("db" not in e and "srt" not in e for e in events)          # nothing internal leaks
-    assert not (web.DATA / "jobs" / job_id / "movie.sub").exists()      # upload removed after the job
+    assert web.jobs[job_id].upload is None                                # upload dropped after the job
+    assert not (web.DATA / "jobs").exists()                                # nothing on disk
 
 
 def test_validation(client):
@@ -82,9 +84,9 @@ def test_daily_vlm_allowance_reduces_budget(client, monkeypatch):
     monkeypatch.setattr(web, "VLM_PER_DAY", 5)
     seen = []
 
-    def spy(idx_path, config, progress):
+    def spy(source, config, progress):
         seen.append(config.max_vlm_cues)
-        return fake_run_job_sync(idx_path, config, progress)
+        return fake_run_job_sync(source, config, progress)
     monkeypatch.setattr(web.jobmod, "run_job_sync", spy)
     wait_done(client, submit(client).json()["id"])          # uses 3 of 5
     wait_done(client, submit(client).json()["id"])          # 2 left
@@ -103,3 +105,9 @@ def test_static_files(client):
     assert r.status_code == 200 and r.headers["content-type"].startswith("text/css")
     assert client.get("/static/index.html").status_code == 404          # only css/js/svg
     assert client.get("/static/..%2Fweb.py").status_code == 404
+
+
+def test_queue_cap(client, monkeypatch):
+    monkeypatch.setattr(web, "MAX_QUEUE", 0)
+    r = submit(client)
+    assert r.status_code == 503 and "Retry-After" in r.headers

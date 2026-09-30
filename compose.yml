@@ -16,8 +16,7 @@ services:
       - "127.0.0.1:8787:8000"       # change 127.0.0.1 to the private IP your reverse proxy reaches
     volumes:
       - ./data:/data
-    tmpfs:                          # uploads, per-job VLM answers and results never touch the disk
-      - /data/jobs
+    tmpfs:                          # belt and braces: the app itself keeps job data in memory
       - /tmp
     labels:
       - com.centurylinklabs.watchtower.enable=true

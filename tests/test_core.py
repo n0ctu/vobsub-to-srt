@@ -383,3 +383,23 @@ def test_glyph_items_only_trusted_shapes():
     g = lines[0].glyphs[0]
     bits = np.unpackbits(np.frombuffer(base64.b64decode(it["bits"]), np.uint8))[:g.w * g.h].reshape(g.h, g.w)
     assert (bits.astype(bool) == g.bits).all() and it["n"] == 1 and it["style"] == ""
+
+
+def test_vlm_client_memory_cache_writes_nothing(tmp_path, monkeypatch):
+    from vobsub_to_srt.vlm import VLMClient
+    monkeypatch.chdir(tmp_path)
+    c = VLMClient(cache_dir=None, base_url="http://x", api_key="k", model="m")
+    assert c.cache_get("a") is None
+    c.cache_put("a", "hello")
+    assert c.cache_get("a") == "hello" and list(tmp_path.iterdir()) == []
+    d = VLMClient(cache_dir=tmp_path / "cache", base_url="http://x", api_key="k", model="m")
+    d.cache_put("a", "disk")
+    assert (tmp_path / "cache" / "a.json").exists() and d.cache_get("a") == "disk"
+
+
+def test_render_srt_matches_write_srt(tmp_path):
+    from vobsub_to_srt.srt import render_srt, write_srt
+    entries = [(0, 1000, "a"), (1000, 2000, ""), (2000, 3000, "<i>b</i>")]
+    write_srt(tmp_path / "x.srt", entries)
+    assert (tmp_path / "x.srt").read_text(encoding="utf-8") == render_srt(entries)
+    assert render_srt(entries).startswith("1\n00:00:00,000 --> 00:00:01,000\na\n\n2\n")

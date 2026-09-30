@@ -48,15 +48,19 @@ warning that a VLM would be needed to learn it. So a clone works offline for the
 | `--context` | 12 | previous cues given to the VLM as reference, 0 = off |
 | `--max-vlm-cues` | none | cap on VLM requests per file; beyond it the file is finished teacher-less (`�` for unknown glyphs) |
 | `--lexicon` | `auto` | tie-break for pixel-identical I/l: `auto` (wordfreq, then Hunspell), `wordfreq`, `hunspell`, `off` |
+| `--diagnostics` | off | write diagnostics to disk: the VLM answer cache (`cache/vlm/`, re-runs free and reproducible), PNGs of unreadable cues (`debug/`), raw VLM answers in the report |
 | `--keep-special-chars` | off | keep typographic variants instead of folding them (see below) |
 | `--tool` | off | VLM submits transcripts via a forced tool call instead of plain text |
 | `--word-memory` | off | remember resolved words (private, see below) |
 | `--dict-dir`, `--no-dict-download` | `dictionaries/` | Hunspell dictionaries (downloaded on first use) |
 | `--glyph-memory-dir`, `--word-memory-dir` | `glyph-memory/`, `word-memory/` | |
-| `--out-dir`, `--cache-dir`, `--debug-dir` | `out/`, `cache/vlm/`, `debug/` | |
+| `--out-dir`, `--cache-dir`, `--debug-dir` | `out/`, off, off | `--cache-dir`/`--debug-dir` switch on that part of the diagnostics with a custom location |
 
 Outputs: `out/<name>.srt`; `out/<name>.report.json` (VLM calls, where each cue's text came from,
-flagged cues, failures, raw VLM answers); `debug/` (images of cues that could not be read).
+flagged cues, failures). **Memory by default:** the pipeline runs entirely in memory; the VLM answer
+cache lives in the process and nothing of the subtitles is written to disk apart from these two
+outputs. `--diagnostics` adds the on-disk answer cache, `debug/` images of unreadable cues and the raw
+VLM answers in the report (useful for QC sheets and cheap re-runs).
 
 **Baseline fonts.** `glyph-memory/` is tracked in the repo and ships glyph memories for fonts
 already learned (currently two common sans-serif subtitle fonts at 1080p, upright and italic). A
@@ -145,8 +149,10 @@ port 8000: drop the `.idx` and `.sub`, watch the progress, download the SRT. Des
 - per-IP limits: `VTS_JOBS_PER_HOUR` (6) and `VTS_VLM_PER_DAY` (600 VLM requests); when a client's
   daily allowance is used up its jobs still run, teacher-less; per job `VTS_MAX_VLM_CUES` (300);
 - input caps: `.sub` ≤ `VTS_MAX_SUB_MB` (64), ≤ `VTS_MAX_CUES` (3000) cues; job timeout 15 min;
-- transient job data (uploads, per-job VLM answers, results) lives under `<data>/jobs` and the
-  process's temp dir; `compose.yml` mounts both as tmpfs, so nothing of a user's subtitles reaches a disk.
+- uploads are held in memory until their job ran and dropped afterwards; results are held in memory
+  until fetched or expired; the VLM cache is per job and in memory. Nothing of a user's subtitles is
+  ever written to disk (the `compose.yml` tmpfs for `/tmp` is belt and braces). `VTS_MAX_QUEUE` (20)
+  bounds the memory held by waiting uploads.
 - `VTS_TRUST_PROXY=1` takes the client address from `X-Forwarded-For` (only behind your own proxy).
 - the page keeps a personal queue in the browser's localStorage: several tracks can be added and are
   submitted one after another; each finished SRT is fetched and stored client-side, so it can be
@@ -180,10 +186,7 @@ api_key=, model=)` for bring-your-own-key). Only the shared glyph memory is writ
 
 ## Roadmap
 
-- **Memory-only jobs in the code itself**, not just via tmpfs: the pipeline takes the `.idx`/`.sub`
-  bytes and returns the SRT without touching a filesystem (in-memory VLM cache, no temp dir, no job
-  files); the web app keeps results in RAM until fetched. Then also drop the per-image hash sidecar
-  for web jobs, so the only thing a job leaves behind is letter shapes.
+- Drop the per-image hash sidecar for web jobs, so the only thing a job leaves behind is letter shapes.
 - Bring-your-own-key (a user's own OpenAI-compatible endpoint for their jobs).
 - A candidates tier for fonts learned on the server before they are promoted into the baseline.
 - Dictionaries for more languages in the lexicon gate.

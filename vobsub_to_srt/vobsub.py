@@ -39,11 +39,15 @@ _TS_RE = re.compile(r"timestamp:\s*(-?)(\d+):(\d+):(\d+):(\d+),\s*filepos:\s*([0
 
 
 def parse_idx(path: Path) -> Idx:
+    return parse_idx_text(path.read_text(encoding="latin-1"))
+
+
+def parse_idx_text(text: str) -> Idx:
     size = (720, 576)
     palette: list[tuple[int, int, int]] = []
     tracks: list[IdxTrack] = []
     offset_ms = 0
-    for raw in path.read_text(encoding="latin-1").splitlines():
+    for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
@@ -215,11 +219,17 @@ def decode_spu(spu: bytes, palette: list[tuple[int, int, int]]):
 
 
 def load_vobsub(idx_path: Path, track: int = 0) -> tuple[Idx, list[Cue]]:
+    """Load an .idx/.sub pair from disk."""
     sub_path = idx_path.with_suffix(".sub")
     if not sub_path.is_file():
         raise FileNotFoundError(f"{idx_path}: companion file {sub_path.name} not found next to it")
-    idx = parse_idx(idx_path)
-    data = sub_path.read_bytes()
+    return load_vobsub_bytes(idx_path.read_bytes(), sub_path.read_bytes(), track)
+
+
+def load_vobsub_bytes(idx_bytes: bytes, sub_bytes: bytes, track: int = 0) -> tuple[Idx, list[Cue]]:
+    """Load an .idx/.sub pair from memory (nothing is written anywhere)."""
+    idx = parse_idx_text(idx_bytes.decode("latin-1"))
+    data = sub_bytes
     trk = idx.tracks[track]
     cues: list[Cue] = []
     for n, (ms, filepos) in enumerate(trk.entries):

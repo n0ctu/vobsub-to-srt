@@ -101,7 +101,7 @@ class AdaptiveLimiter:
 
 
 class VLMClient:
-    def __init__(self, cache_dir: Path = Path("cache/vlm"), concurrency: int = 2,
+    def __init__(self, cache_dir: Path | None = None, concurrency: int = 2,
                  base_url: str | None = None, api_key: str | None = None, model: str | None = None,
                  timeout: float = 60.0, max_attempts: int = 4, use_tool: bool = False):
         load_env()
@@ -113,8 +113,13 @@ class VLMClient:
         self.api_key = api_key or os.environ["DEEPSEEK_API_KEY"]
         self.model = model or os.environ["DEEPSEEK_MODEL"]
         self.use_tool = use_tool
+        # answer cache: in memory for this client's lifetime (default: nothing of the subtitle text
+        # touches a disk), or on disk under cache_dir (CLI --diagnostics: re-runs are free and
+        # reproducible across processes)
         self.cache_dir = cache_dir
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._mem: dict[str, str] = {}
+        if cache_dir is not None:
+            cache_dir.mkdir(parents=True, exist_ok=True)
         self.limiter = AdaptiveLimiter(concurrency)
         self.max_throttle_retries = 60
         self.timeout = timeout
@@ -130,6 +135,23 @@ class VLMClient:
 
     async def __aexit__(self, *exc):
         await self._client.aclose()
+
+    def cache_get(self, key: str) -> str | None:
+        if self.cache_dir is None:
+            return self._mem.get(key)
+        f = self.cache_dir / f"{key}.json"
+        if f.exists():
+            return json.loads(f.read_text())["text"]
+        return None
+
+    def cache_put(self, key: str, text: str) -> None:
+        if self.cache_dir is None:
+            self._mem[key] = text
+            return
+        f = self.cache_dir / f"{key}.json"
+        tmp = f.with_suffix(f".{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({"text": text}, ensure_ascii=False))
+        tmp.replace(f)
 
     def _key(self, png: bytes, prompt: str) -> str:
         h = hashlib.sha256()
@@ -155,16 +177,16 @@ class VLMClient:
         mode = "\0tool" if self.use_tool else ""
         # image-level key (without the context history): a re-run whose context differs reuses the
         # earlier answer for the same image instead of asking again -> deterministic, no API call
-        image_file = self.cache_dir / f"img-{self._key(png, TRANSCRIBE_SYSTEM + chr(0) + user + mode)}.json"
+        image_key = "img-" + self._key(png, TRANSCRIBE_SYSTEM + chr(0) + user + mode)
         if context:
             user += TRANSCRIBE_CONTEXT.format(k=len(context), history="\n".join(context))
         key = self._key(png, TRANSCRIBE_SYSTEM + "\0" + user + mode)
-        cache_file = self.cache_dir / f"{key}.json"
-        if not cache_file.exists() and image_file.exists():
-            cache_file = image_file
-        if cache_file.exists():
+        cached = self.cache_get(key)
+        if cached is None:
+            cached = self.cache_get(image_key)
+        if cached is not None:
             self.cache_hits += 1
-            return json.loads(cache_file.read_text())["text"], True
+            return cached, True
         payload = {
             "model": self.model,
             "temperature": 0,
@@ -200,11 +222,9 @@ class VLMClient:
                     text = _extract(r.json()["choices"][0]["message"])
                     if not text:
                         raise ValueError("empty response")
-                    tmp = cache_file.with_suffix(f".{os.getpid()}.tmp")
-                    tmp.write_text(json.dumps({"text": text}, ensure_ascii=False))
-                    tmp.replace(cache_file)
-                    if not image_file.exists():
-                        image_file.write_text(json.dumps({"text": text}, ensure_ascii=False))
+                    self.cache_put(key, text)
+                    if self.cache_get(image_key) is None:
+                        self.cache_put(image_key, text)
                     return text, False
             except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
                 last_err = e

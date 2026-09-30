@@ -17,8 +17,11 @@ def main() -> None:
     ap.add_argument("--glyph-memory-dir", type=Path, default=Path("glyph-memory"),
                     help="font glyph DBs; the repo ships a baseline here, new fonts are added next to it")
     ap.add_argument("--out-dir", type=Path, default=Path("out"))
-    ap.add_argument("--debug-dir", type=Path, default=Path("debug"))
-    ap.add_argument("--cache-dir", type=Path, default=Path("cache/vlm"))
+    ap.add_argument("--diagnostics", action="store_true",
+                    help="write diagnostics to disk: VLM answer cache (re-runs free and reproducible), PNGs of "
+                         "unreadable cues, raw VLM answers in the report. Default: only the SRT and report are written")
+    ap.add_argument("--debug-dir", type=Path, default=None, help="PNGs of unreadable cues (default with --diagnostics: debug/)")
+    ap.add_argument("--cache-dir", type=Path, default=None, help="on-disk VLM answer cache (default with --diagnostics: cache/vlm)")
     ap.add_argument("--mode", choices=["hybrid", "vlm-only", "nocr-only"], default="hybrid")
     ap.add_argument("--concurrency", type=int, default=2)
     ap.add_argument("--batch-size", type=int, default=16)
@@ -46,7 +49,10 @@ def main() -> None:
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    opts = Options(db_dir=a.glyph_memory_dir, out_dir=a.out_dir, debug_dir=a.debug_dir, batch_size=a.batch_size,
+    debug_dir = a.debug_dir or (Path("debug") if a.diagnostics else None)
+    cache_dir = a.cache_dir or (Path("cache/vlm") if a.diagnostics else None)
+    opts = Options(db_dir=a.glyph_memory_dir, out_dir=a.out_dir, debug_dir=debug_dir, diagnostics=a.diagnostics or bool(a.cache_dir),
+                   batch_size=a.batch_size,
                    mode=a.mode, track=a.track, context=a.context, max_vlm_cues=a.max_vlm_cues,
                    rescale=a.debug_rescale, lexicon=a.lexicon,
                    keep_special_chars=a.keep_special_chars,
@@ -75,7 +81,7 @@ def main() -> None:
             for p in a.inputs:
                 await process_file(p, None, opts)
             return
-        async with VLMClient(cache_dir=a.cache_dir, concurrency=a.concurrency, use_tool=a.tool) as client:
+        async with VLMClient(cache_dir=cache_dir, concurrency=a.concurrency, use_tool=a.tool) as client:
             for p in a.inputs:
                 await process_file(p, client, opts)
 

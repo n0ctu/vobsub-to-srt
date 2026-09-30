@@ -23,7 +23,7 @@ def normalize_text(text: str) -> str:
     return "\n".join(normalize_styled_line(l) for l in text.split("\n") if l.strip())
 
 
-def write_srt(path: Path, entries: list[tuple[int, int, str]]) -> None:
+def render_srt(entries: list[tuple[int, int, str]]) -> str:
     parts = []
     n = 0
     for start, end, text in entries:
@@ -31,5 +31,9 @@ def write_srt(path: Path, entries: list[tuple[int, int, str]]) -> None:
             continue
         n += 1
         parts.append(f"{n}\n{fmt_ts(start)} --> {fmt_ts(end)}\n{text}\n")
+    return "\n".join(parts)
+
+
+def write_srt(path: Path, entries: list[tuple[int, int, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(parts), encoding="utf-8")
+    path.write_text(render_srt(entries), encoding="utf-8")

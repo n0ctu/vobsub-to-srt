@@ -30,7 +30,7 @@ async def main() -> None:
     ap.add_argument("--concurrency", type=int, default=2)
     ap.add_argument("--tool", action="store_true")
     a = ap.parse_args()
-    async with VLMClient(concurrency=a.concurrency, use_tool=a.tool) as client:
+    async with VLMClient(cache_dir=Path('cache/vlm'), concurrency=a.concurrency, use_tool=a.tool) as client:
         for idx_path in a.inputs:
             idx, cues = load_vobsub(idx_path)
             lang = idx.tracks[0].lang

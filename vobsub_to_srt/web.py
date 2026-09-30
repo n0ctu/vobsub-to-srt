@@ -1,12 +1,14 @@
 """Minimal web app: drop a VobSub, get an SRT.
 
-One process, no database. Jobs live in <data>/jobs/<id>/ and are deleted after VTS_JOB_TTL seconds.
+One process, no database, and nothing of a user's subtitles ever touches a disk: uploads are held
+in memory until their job ran, results are held in memory until fetched or VTS_JOB_TTL seconds old.
 A single worker converts jobs one after another (it is the only writer of the shared glyph memory and
 the global VLM throttle). Per-IP limits: jobs per hour and VLM requests per day; when a client's daily
-VLM allowance is used up its jobs still run, teacher-less. Uploads are never kept beyond the job.
+VLM allowance is used up its jobs still run, teacher-less. A queue cap bounds memory use.
 
-Environment: VTS_DATA (default "."), VTS_JOB_TTL=3600, VTS_MAX_VLM_CUES=300, VTS_JOBS_PER_HOUR=6,
-VTS_VLM_PER_DAY=600, VTS_MAX_SUB_MB=64, VTS_MAX_CUES=3000, VTS_TRUST_PROXY=0, VTS_HOST, VTS_PORT.
+Environment: VTS_DATA (default "."; glyph memory, word memory, dictionaries), VTS_JOB_TTL=3600,
+VTS_MAX_VLM_CUES=300, VTS_JOBS_PER_HOUR=6, VTS_VLM_PER_DAY=600, VTS_MAX_SUB_MB=64, VTS_MAX_CUES=3000,
+VTS_MAX_QUEUE=20, VTS_TRUST_PROXY=0, VTS_HOST, VTS_PORT.
 """
 from __future__ import annotations
 
@@ -16,7 +18,6 @@ import logging
 import os
 import re
 import secrets
-import shutil
 import time
 import uuid
 from collections import defaultdict, deque
@@ -24,10 +25,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 
 from . import job as jobmod
 from .job import JobConfig
+from .pipeline import VobSubData
 from .names import random_db_name  # noqa: F401  (re-exported for the stats page)
 
 log = logging.getLogger("vobsub_to_srt.web")
@@ -47,6 +49,7 @@ MAX_IDX_BYTES = 2 * 1024 * 1024
 MAX_CUES = _env_int("VTS_MAX_CUES", 3000)
 TRUST_PROXY = os.environ.get("VTS_TRUST_PROXY", "0") == "1"
 JOB_TIMEOUT = _env_int("VTS_JOB_TIMEOUT", 900)
+MAX_QUEUE = _env_int("VTS_MAX_QUEUE", 20)
 
 STATIC = Path(__file__).parent / "static"
 _STEM = re.compile(r"[^A-Za-z0-9._-]+")
@@ -55,9 +58,9 @@ _STEM = re.compile(r"[^A-Za-z0-9._-]+")
 @dataclass
 class Job:
     id: str
-    dir: Path
     stem: str
     ip: str
+    upload: VobSubData | None = None  # held in memory until the job ran, then dropped
     created: float = field(default_factory=time.time)
     status: str = "queued"           # queued | running | done | error
     events: list[dict] = field(default_factory=list)
@@ -112,9 +115,6 @@ async def lifespan(app: FastAPI):
     global queue
     queue = asyncio.Queue()          # bound to this process's event loop
     jobs.clear()
-    (DATA / "jobs").mkdir(parents=True, exist_ok=True)
-    for stale in (DATA / "jobs").iterdir():          # leftovers from a previous process
-        shutil.rmtree(stale, ignore_errors=True)
     tasks = [asyncio.create_task(worker()), asyncio.create_task(sweeper())]
     yield
     for t in tasks:
@@ -158,16 +158,14 @@ async def create_job(request: Request, idx: UploadFile, sub: UploadFile):
         raise HTTPException(400, "no cues found in the .idx file")
     if n > MAX_CUES:
         raise HTTPException(413, f"{n} cues; the limit is {MAX_CUES}")
+    if queue.qsize() >= MAX_QUEUE:
+        raise HTTPException(503, "the queue is full; try again in a few minutes", headers={"Retry-After": "120"})
     wait = limiter.check_job(ip)
     if wait is not None:
         raise HTTPException(429, f"job limit reached; try again in {wait} s", headers={"Retry-After": str(wait)})
     stem = _STEM.sub("_", Path(idx.filename or "subtitle").stem)[:80] or "subtitle"
     job_id = uuid.uuid4().hex[:12] + secrets.token_hex(2)
-    jdir = DATA / "jobs" / job_id
-    jdir.mkdir(parents=True)
-    (jdir / f"{stem}.idx").write_bytes(idx_bytes)
-    (jdir / f"{stem}.sub").write_bytes(sub_bytes)
-    job = Job(job_id, jdir, stem, ip)
+    job = Job(job_id, stem, ip, upload=VobSubData(stem, idx_bytes, sub_bytes))
     jobs[job_id] = job
     job.push({"event": "queued", "position": queue.qsize() + 1, "cues": n})
     await queue.put(job_id)
@@ -224,8 +222,8 @@ async def job_srt(job_id: str):
     job = jobs.get(job_id)
     if not job or job.status != "done":
         raise HTTPException(404, "no result for this job")
-    return FileResponse(job.dir / f"{job.stem}.srt", media_type="text/plain; charset=utf-8",
-                        filename=f"{job.stem}.srt")
+    return Response(job.result.srt, media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{job.stem}.srt"'})
 
 
 @app.get("/api/jobs/{job_id}/report")
@@ -281,8 +279,7 @@ async def _run(job: Job) -> None:
 
     try:
         result = await asyncio.wait_for(
-            asyncio.to_thread(jobmod.run_job_sync, job.dir / f"{job.stem}.idx", config, progress), JOB_TIMEOUT)
-        (job.dir / f"{job.stem}.srt").write_text(result.srt, encoding="utf-8")
+            asyncio.to_thread(jobmod.run_job_sync, job.upload, config, progress), JOB_TIMEOUT)
         job.result = result
         job.vlm_used = result.vlm_used
         limiter.add_vlm(job.ip, result.vlm_used)
@@ -295,8 +292,7 @@ async def _run(job: Job) -> None:
         job.error = f"{type(e).__name__}: {e}"[:300]
         job.push({"event": "error", "message": job.error})
     finally:
-        for name in (f"{job.stem}.idx", f"{job.stem}.sub"):   # uploads never outlive the job
-            (job.dir / name).unlink(missing_ok=True)
+        job.upload = None                                   # uploads never outlive the job
 
 
 async def worker() -> None:
@@ -314,7 +310,6 @@ async def sweeper() -> None:
         cutoff = time.time() - JOB_TTL
         for job_id, job in list(jobs.items()):
             if job.created < cutoff and job.status in ("done", "error"):
-                shutil.rmtree(job.dir, ignore_errors=True)
                 del jobs[job_id]
 
 
