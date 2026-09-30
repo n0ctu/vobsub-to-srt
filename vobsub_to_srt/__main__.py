@@ -25,6 +25,8 @@ def main() -> None:
     ap.add_argument("--track", type=int, default=0)
     ap.add_argument("--context", type=int, default=12, help="previous cues given to the VLM as reference (0 = off)")
     ap.add_argument("--tool", action="store_true", help="VLM submits transcripts via a forced tool call")
+    ap.add_argument("--no-bundled-fonts", action="store_true",
+                    help="ignore the glyph memories shipped with the package")
     ap.add_argument("--word-memory", action="store_true",
                     help="remember resolved words (stored in --word-memory-dir, never in the glyph memory)")
     ap.add_argument("--word-memory-dir", type=Path, default=Path("word-memory"),
@@ -44,7 +46,7 @@ def main() -> None:
     logging.basicConfig(level=logging.DEBUG if a.verbose else logging.INFO,
                         format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    opts = Options(db_dir=a.glyph_memory_dir, out_dir=a.out_dir, debug_dir=a.debug_dir, batch_size=a.batch_size,
+    opts = Options(db_dir=a.glyph_memory_dir, bundled_fonts=not a.no_bundled_fonts, out_dir=a.out_dir, debug_dir=a.debug_dir, batch_size=a.batch_size,
                    mode=a.mode, track=a.track, context=a.context,
                    rescale=a.debug_rescale, lexicon=a.lexicon,
                    keep_special_chars=a.keep_special_chars,
