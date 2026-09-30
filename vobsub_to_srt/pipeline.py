@@ -167,6 +167,24 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
             return 10 ** 9
         return max(0, opts.max_vlm_cues - budget["used"])
 
+    emitted: dict[int, tuple[str, str]] = {}
+
+    def flush_cues() -> None:
+        """Send cues whose text is new or changed since the last flush (live transcript)."""
+        if not opts.progress:
+            return
+        items = []
+        for st in states:
+            if st.text is None:
+                continue
+            key = (st.text, st.source)
+            if emitted.get(st.cue.index) != key:
+                emitted[st.cue.index] = key
+                items.append({"i": st.cue.index, "start": st.cue.start_ms, "end": st.cue.end_ms,
+                              "text": st.text, "src": st.source})
+        if items:
+            emit("cues", items=items, resolved=len(emitted))
+
     def emit(event: str, **data) -> None:
         if opts.progress:
             opts.progress({"event": event, "file": idx_path.name, "cues": len(states),
@@ -328,6 +346,7 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
                         stats["nocr"] += 1
                     else:
                         unresolved.append(st)
+                flush_cues()
                 if not unresolved or opts.mode == "nocr-only":
                     break
                 if budget_left() == 0:
@@ -350,6 +369,7 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
                          rounds, phase, len(unresolved), 100 * unk_share, len(batch))
                 await _vlm_batch(batch, vlm_cue, apply_vlm, failures, "vlm")
                 await requery_misfits()
+                flush_cues()
                 if db.dirty:
                     db.save()
             if recheck == 3 or opts.mode == "nocr-only":
@@ -386,6 +406,7 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
             if st.cue.index not in still:
                 failures.pop(st.cue.index, None)
         failures = {k: still[k] for k in still}
+        flush_cues()
 
     # ---- re-arbitration: VLM cues against the final DB (glyphs confirmed later now count) ----
     for st in states:
@@ -411,6 +432,8 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
                 log.warning("cue %d: confirmed glyphs override VLM (final pass): %s",
                             st.cue.index, ", ".join(corrections))
 
+    flush_cues()          # re-read / re-arbitration may have changed texts
+
     # ---- final fallback for anything unresolved ----
     for st in states:
         if st.text is not None:
@@ -431,6 +454,7 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
             log.debug("  cue %d line %d glyph %d: %s", st.cue.index, li + 1, ci + 1, reason)
         _save_debug(opts, st, "failed")
 
+    flush_cues()
     if db.dirty:
         db.save()
 

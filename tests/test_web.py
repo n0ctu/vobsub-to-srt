@@ -15,6 +15,7 @@ IDX = b"# VobSub index\nsize: 720x576\nid: en, index: 0\n" + b"".join(
 
 def fake_run_job_sync(idx_path, config, progress):
     progress({"event": "probe", "db": "calm-sable-0000", "mode": "exact", "coverage": 1.0})
+    progress({"event": "cues", "items": [{"i": 0, "start": 0, "end": 1000, "text": "Hello", "src": "nocr"}], "resolved": 1})
     progress({"event": "done", "unresolved": 0, "seconds": 0.1})
     return JobResult(srt="1\n00:00:00,000 --> 00:00:01,000\nHello\n", report={"by_source": {"nocr": 5}},
                      unresolved=0, vlm_used=3, budget_exhausted=False)
@@ -53,7 +54,8 @@ def test_upload_convert_download(client):
     assert srt.status_code == 200 and "Hello" in srt.text
     assert srt.headers["content-disposition"].endswith('filename="movie.srt"')
     events = [json.loads(l[6:]) for l in client.get(f"/api/jobs/{job_id}/events").text.splitlines() if l.startswith("data: ")]
-    assert [e["event"] for e in events] == ["queued", "started", "probe", "done"]
+    assert [e["event"] for e in events] == ["queued", "started", "probe", "cues", "done"]
+    assert events[3]["items"][0]["text"] == "Hello"
     assert all("db" not in e and "srt" not in e for e in events)          # nothing internal leaks
     assert not (web.DATA / "jobs" / job_id / "movie.sub").exists()      # upload removed after the job
 
