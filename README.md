@@ -180,6 +180,7 @@ uv run pytest
 uv run python tools/compare_srt.py reference.srt out/X.srt      # CER, exact cues, style diffs
 uv run python tools/eval_context.py X.idx --context 12          # VLM accuracy with/without context
 uv run python tools/qc_sheet.py X.idx out/X.srt --random 6 --risky 4   # image vs. transcript sheet
+tools/build_css.sh                                              # rebuild static/app.css (Tailwind CLI) after editing index.html
 uv run vobsub-to-srt --debug-rescale 0.6667 X.idx               # simulate another resolution
 ```
 

@@ -16,6 +16,8 @@ IDX = b"# VobSub index\nsize: 720x576\nid: en, index: 0\n" + b"".join(
 def fake_run_job_sync(idx_path, config, progress):
     progress({"event": "probe", "db": "calm-sable-0000", "mode": "exact", "coverage": 1.0})
     progress({"event": "cues", "items": [{"i": 0, "start": 0, "end": 1000, "text": "Hello", "src": "nocr"}], "resolved": 1})
+    progress({"event": "glyphs", "items": [{"key": "k1", "label": "H", "w": 4, "h": 5, "bits": "8A==", "n": 3,
+                                            "style": "", "new": False}], "known": 1, "pending": 0})
     progress({"event": "done", "unresolved": 0, "seconds": 0.1})
     return JobResult(srt="1\n00:00:00,000 --> 00:00:01,000\nHello\n", report={"by_source": {"nocr": 5}},
                      unresolved=0, vlm_used=3, budget_exhausted=False)
@@ -54,8 +56,8 @@ def test_upload_convert_download(client):
     assert srt.status_code == 200 and "Hello" in srt.text
     assert srt.headers["content-disposition"].endswith('filename="movie.srt"')
     events = [json.loads(l[6:]) for l in client.get(f"/api/jobs/{job_id}/events").text.splitlines() if l.startswith("data: ")]
-    assert [e["event"] for e in events] == ["queued", "started", "probe", "cues", "done"]
-    assert events[3]["items"][0]["text"] == "Hello"
+    assert [e["event"] for e in events] == ["queued", "started", "probe", "cues", "glyphs", "done"]
+    assert events[3]["items"][0]["text"] == "Hello" and events[4]["items"][0]["label"] == "H"
     assert all("db" not in e and "srt" not in e for e in events)          # nothing internal leaks
     assert not (web.DATA / "jobs" / job_id / "movie.sub").exists()      # upload removed after the job
 
@@ -93,4 +95,11 @@ def test_stats_and_index(client):
     assert client.get("/healthz").json() == {"ok": True}
     s = client.get("/api/stats").json()
     assert "fonts" in s and s["limits"]["max_cues"] == web.MAX_CUES
-    assert "<title>vobsub-to-srt" in client.get("/").text
+    assert "<title>VobSub to SRT Tool" in client.get("/").text
+
+
+def test_static_files(client):
+    r = client.get("/static/app.css")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/css")
+    assert client.get("/static/index.html").status_code == 404          # only css/js/svg
+    assert client.get("/static/..%2Fweb.py").status_code == 404

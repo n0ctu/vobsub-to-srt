@@ -364,3 +364,22 @@ def test_baseline_glyph_memories_are_clean_and_loadable():
         for s_ in db.shapes.values():
             for v in s_.variants:
                 assert all(len(lab) <= 3 for lab in v.votes)    # letters / fused pairs only
+
+
+def test_glyph_items_only_trusted_shapes():
+    import base64
+    from collections import Counter
+    from vobsub_to_srt.pipeline import glyph_items
+    db = GlyphDB("t")
+    lines = segment(render("abc"))
+    learn_cue(db, lines, "abc", 12, source="one")
+    glyphs = {g.key: g for l in lines for g in l.glyphs}
+    freq = Counter(g.key for l in lines for g in l.glyphs)
+    assert glyph_items(db, glyphs, freq) == {}                      # seen once: quarantined
+    learn_cue(db, lines, "abc", 12, source="two")
+    items = glyph_items(db, glyphs, freq)
+    assert sorted(it["label"] for it in items.values()) == ["a", "b", "c"]
+    it = items[lines[0].glyphs[0].key]
+    g = lines[0].glyphs[0]
+    bits = np.unpackbits(np.frombuffer(base64.b64decode(it["bits"]), np.uint8))[:g.w * g.h].reshape(g.h, g.w)
+    assert (bits.astype(bool) == g.bits).all() and it["n"] == 1 and it["style"] == ""

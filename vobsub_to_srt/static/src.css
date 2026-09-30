@@ -1,0 +1,10 @@
+@import "tailwindcss";
+
+/* dark mode by class on <html> (set before paint from localStorage / system preference) */
+@custom-variant dark (&:where(.dark, .dark *));
+
+@keyframes flash {
+  from { background-color: rgb(14 165 233 / 0.35); }   /* sky-500 at 35 % */
+  to { background-color: rgb(14 165 233 / 0); }
+}
+.flash { animation: flash 1.4s ease-out; }

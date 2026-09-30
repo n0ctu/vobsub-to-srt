@@ -21,3 +21,4 @@ cache/
 out/
 debug/
 dist/
+.cache/

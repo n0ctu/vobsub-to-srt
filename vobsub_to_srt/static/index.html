@@ -3,100 +3,131 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>vobsub-to-srt</title>
-<style>
-  :root { color-scheme: light dark; --fg: #1a1a1a; --bg: #fafafa; --muted: #6b6b6b; --line: #d8d8d8; --acc: #2b6cb0; --ok: #2f855a; --warn: #b7791f; }
-  @media (prefers-color-scheme: dark) { :root { --fg: #e8e8e8; --bg: #141414; --muted: #9a9a9a; --line: #333; --acc: #63a4ff; --ok: #68d391; --warn: #f6ad55; } }
-  body { margin: 0; padding: 24px 16px 48px; font: 16px/1.5 system-ui, sans-serif; color: var(--fg); background: var(--bg); }
-  main { max-width: 660px; margin: 0 auto; }
-  header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-  h1 { font-size: 22px; margin: 0 0 4px; }
-  a { color: var(--acc); }
-  p.sub { color: var(--muted); margin: 0 0 20px; }
-  #drop { border: 2px dashed var(--line); border-radius: 10px; padding: 32px 16px; text-align: center; cursor: pointer; }
-  #drop.over { border-color: var(--acc); }
-  #drop input { display: none; }
-  .files { margin: 12px 0; color: var(--muted); font-size: 14px; min-height: 1.5em; }
-  button { font: inherit; padding: 8px 18px; border-radius: 6px; border: 1px solid var(--line); background: var(--acc); color: #fff; cursor: pointer; }
-  button:disabled { opacity: .5; cursor: default; }
-  #progress { margin: 20px 0 0; }
-  #progress .bar { height: 10px; border-radius: 5px; background: var(--line); overflow: hidden; }
-  #progress .fill { height: 100%; width: 0; background: var(--acc); transition: width .3s; }
-  #progress .fill.done { background: var(--ok); }
-  #progress .txt { font-size: 13px; color: var(--muted); margin-top: 4px; display: flex; justify-content: space-between; }
-  #transcript { margin: 14px 0 0; max-height: 45vh; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; font-size: 14px; }
-  #transcript .row { display: grid; grid-template-columns: 5.5em 1fr auto; gap: 10px; padding: 3px 10px; border-bottom: 1px solid var(--line); }
-  #transcript .row:last-child { border-bottom: 0; }
-  #transcript .ts { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px; padding-top: 2px; }
-  #transcript .txt { white-space: pre-wrap; }
-  #transcript .src { font-size: 11px; color: var(--muted); padding-top: 3px; }
-  #transcript .row.vision .src { color: var(--acc); }
-  #transcript .row.fallback .txt { color: var(--warn); }
-  #transcript .row.fresh { animation: flash 1.2s ease-out; }
-  @keyframes flash { from { background: color-mix(in srgb, var(--acc) 25%, transparent); } to { background: transparent; } }
-  pre#log { margin: 14px 0 0; padding: 12px; max-height: 160px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
-  #summary { margin-top: 12px; font-size: 15px; }
-  #summary .ok { color: var(--ok); } #summary .warn { color: var(--warn); }
-  a.dl { display: inline-block; margin-top: 12px; padding: 10px 18px; border-radius: 6px; background: var(--acc); color: #fff; text-decoration: none; }
-  details { margin-top: 28px; color: var(--muted); font-size: 14px; }
-  details summary { cursor: pointer; color: var(--fg); }
-  details li { margin: 4px 0; }
-  footer { margin-top: 28px; color: var(--muted); font-size: 13px; }
-</style>
+<title>VobSub to SRT Tool</title>
+<script>
+  // theme before first paint: stored choice, else system preference
+  (function () {
+    const t = localStorage.getItem('theme');
+    const dark = t ? t === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.classList.toggle('dark', dark);
+    document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+  })();
+</script>
+<link rel="stylesheet" href="/static/app.css">
 </head>
-<body>
-<main>
-  <header>
-    <h1>VobSub → SRT</h1>
-    <a href="https://github.com/n0ctu/vobsub-to-srt" rel="noopener">source on GitHub</a>
-  </header>
-  <p class="sub">Turns DVD/Blu-ray bitmap subtitles (<code>.idx</code> + <code>.sub</code>) into text subtitles (<code>.srt</code>),
-  keeping <i>italics</i> and line breaks. Letters are matched against a shared memory of fonts; a font nobody has
-  uploaded before is read once by a vision model and is then known for everyone.</p>
+<body class="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100 antialiased">
+<main class="mx-auto max-w-6xl px-4 py-6 md:py-10 grid gap-8 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
 
-  <label id="drop">
-    <input type="file" id="files" multiple accept=".idx,.sub">
-    <span id="droptext">Drop the <b>.idx</b> and <b>.sub</b> of one subtitle track here, or click to choose</span>
-  </label>
-  <div class="files" id="chosen"></div>
-  <button id="go" disabled>Convert</button>
+  <!-- ============ left panel ============ -->
+  <section class="space-y-5">
+    <header class="flex items-start justify-between gap-3">
+      <div>
+        <h1 class="text-2xl font-semibold tracking-tight">VobSub to SRT Tool</h1>
+        <p class="text-sm text-zinc-500 dark:text-zinc-400">Bitmap subtitles in, text subtitles out.</p>
+      </div>
+      <div class="flex items-center gap-2 shrink-0">
+        <a href="https://github.com/n0ctu/vobsub-to-srt" rel="noopener" class="text-sm text-sky-700 hover:underline dark:text-sky-400">GitHub</a>
+        <button id="theme" type="button" title="Toggle light / dark" class="rounded-md border border-zinc-300 px-2 py-1 text-sm hover:bg-zinc-100 dark:border-zinc-700 dark:hover:bg-zinc-800">☾</button>
+      </div>
+    </header>
 
-  <div id="progress" hidden>
-    <div class="bar"><div class="fill"></div></div>
-    <div class="txt"><span id="pleft">preparing…</span><span id="pright"></span></div>
-  </div>
-  <div id="transcript" hidden></div>
-  <pre id="log" hidden></pre>
-  <div id="summary"></div>
-  <div id="result"></div>
+    <p class="text-[15px] leading-relaxed">Drop the <code class="rounded bg-zinc-200/70 px-1 dark:bg-zinc-800">.idx</code> and
+      <code class="rounded bg-zinc-200/70 px-1 dark:bg-zinc-800">.sub</code> of one subtitle track and get an
+      <code class="rounded bg-zinc-200/70 px-1 dark:bg-zinc-800">.srt</code>, italics and line breaks included.
+      Letters are matched against a shared memory of fonts; a font nobody has uploaded before is read once by a vision
+      model and is then known for everyone.</p>
 
-  <details>
-    <summary>How it works, what to expect</summary>
-    <ul>
-      <li><b>Known font:</b> a few seconds, no vision model involved. This is the case for every font that was
-          uploaded before (currently <span id="fonts">?</span> fonts in memory).</li>
-      <li><b>New font:</b> the converter asks a vision model about the cues that teach the most new letters, learns
-          their shapes, and reads the rest itself. Typically 50–200 requests, a couple of minutes; each request is
-          only made once per letter shape, never per cue.</li>
-      <li><b>Accuracy:</b> letters are matched pixel-exactly, so text is reproduced literally (typos included).
-          Where the vision model and the memory disagree, the memory wins once it has enough evidence. Pixel-identical
-          <code>I</code>/<code>l</code> are decided by dictionaries.</li>
-      <li><b>Unknown glyphs</b> that could not be learned (budget used up, no vision model) are written as
-          <code>�</code> so you can find them; the count is shown after the conversion.</li>
-      <li><b>Limits per address:</b> <span id="limits">?</span>. Jobs run one after another; the queue position is shown.</li>
-      <li><b>Data:</b> uploads are deleted the moment the job ends, the SRT after one hour. Only the <em>shapes of the
-          letters</em> (the font, with no words or text) are kept in the shared memory. The memory is published with
-          the source code.</li>
-    </ul>
-  </details>
+    <label id="drop" class="block cursor-pointer rounded-xl border-2 border-dashed border-zinc-300 bg-white p-8 text-center transition hover:border-sky-500 dark:border-zinc-700 dark:bg-zinc-900 dark:hover:border-sky-400">
+      <input type="file" id="files" multiple accept=".idx,.sub" class="hidden">
+      <span class="text-zinc-600 dark:text-zinc-300">Drop the <b>.idx</b> and <b>.sub</b> here, or click to choose</span>
+    </label>
+    <div id="chosen" class="min-h-6 text-sm text-zinc-500 dark:text-zinc-400"></div>
+    <button id="go" disabled class="rounded-md bg-sky-600 px-5 py-2 font-medium text-white shadow-sm hover:bg-sky-500 disabled:cursor-default disabled:opacity-40">Convert</button>
 
-  <footer>Free and open source: <a href="https://github.com/n0ctu/vobsub-to-srt" rel="noopener">github.com/n0ctu/vobsub-to-srt</a> · MIT license.
-    Problems or a font that came out wrong? <a href="https://github.com/n0ctu/vobsub-to-srt/issues" rel="noopener">Open an issue</a>.</footer>
+    <details class="rounded-lg border border-zinc-200 bg-white p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
+      <summary class="cursor-pointer font-medium text-zinc-800 dark:text-zinc-200">How it works, what to expect</summary>
+      <ul class="mt-3 space-y-2 list-disc pl-5">
+        <li><b>Known font:</b> a few seconds, no vision model involved. This is the case for every font that was uploaded before (currently <span id="fonts">?</span> fonts in memory).</li>
+        <li><b>New font:</b> the converter asks a vision model about the cues that teach the most new letters, learns their shapes, and reads the rest itself. Typically 50–200 requests, a couple of minutes; each request is made once per letter shape, never per cue.</li>
+        <li><b>Accuracy:</b> letters are matched pixel-exactly, so text is reproduced literally (typos included). Where the vision model and the memory disagree, the memory wins once it has enough evidence. Pixel-identical <code>I</code>/<code>l</code> are decided by dictionaries.</li>
+        <li><b>Unknown glyphs</b> that could not be learned (budget used up, no vision model) are written as <code>�</code> so you can find them.</li>
+        <li><b>Limits per address:</b> <span id="limits">?</span>. Jobs run one after another; the queue position is shown.</li>
+        <li><b>Data:</b> uploads are deleted the moment the job ends, the SRT after one hour. Only the <em>shapes of the letters</em> (the font, no words or text) are kept in the shared memory, which is published with the source code.</li>
+      </ul>
+    </details>
+
+    <footer class="text-xs text-zinc-500 dark:text-zinc-500">Free and open source, MIT license ·
+      <a href="https://github.com/n0ctu/vobsub-to-srt" rel="noopener" class="text-sky-700 hover:underline dark:text-sky-400">github.com/n0ctu/vobsub-to-srt</a> ·
+      a font that came out wrong? <a href="https://github.com/n0ctu/vobsub-to-srt/issues" rel="noopener" class="text-sky-700 hover:underline dark:text-sky-400">open an issue</a></footer>
+  </section>
+
+  <!-- ============ right panel ============ -->
+  <section id="right" class="space-y-4">
+    <div id="idle" class="rounded-xl border border-dashed border-zinc-300 p-10 text-center text-sm text-zinc-500 dark:border-zinc-800 dark:text-zinc-500">
+      Progress, the live transcript and the glyphs used will appear here.
+    </div>
+
+    <div id="progress" hidden class="rounded-xl border border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+      <div class="h-2.5 overflow-hidden rounded-full bg-zinc-200 dark:bg-zinc-800">
+        <div id="fill" class="h-full w-0 rounded-full bg-sky-500 transition-[width] duration-300"></div>
+      </div>
+      <div class="mt-2 flex flex-wrap justify-between gap-x-4 text-sm text-zinc-600 dark:text-zinc-400">
+        <span id="pleft">preparing…</span><span id="pright"></span>
+      </div>
+      <details id="logbox" class="mt-2 text-xs text-zinc-500 dark:text-zinc-500">
+        <summary class="cursor-pointer">steps</summary>
+        <pre id="log" class="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-mono"></pre>
+      </details>
+      <div id="summary" class="mt-2 text-sm"></div>
+      <div id="result" class="mt-3 flex flex-wrap items-center gap-3"></div>
+    </div>
+
+    <div id="tbox" hidden class="rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+      <div class="flex items-baseline justify-between border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+        <h2 class="text-sm font-medium">Live transcript</h2>
+        <span class="text-xs text-zinc-500">
+          <span class="inline-block h-2 w-2 rounded-full bg-zinc-400 align-middle"></span> memory
+          <span class="ml-2 inline-block h-2 w-2 rounded-full bg-sky-500 align-middle"></span> vision
+          <span class="ml-2 inline-block h-2 w-2 rounded-full bg-amber-500 align-middle"></span> unresolved
+        </span>
+      </div>
+      <div id="transcript" class="max-h-[42vh] overflow-y-auto divide-y divide-zinc-100 text-sm dark:divide-zinc-800"></div>
+    </div>
+
+    <div id="gbox" hidden class="space-y-4">
+      <div class="rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+        <div class="flex items-baseline justify-between border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+          <h2 class="text-sm font-medium">Newly learned glyphs</h2><span id="gnew-n" class="text-xs text-zinc-500"></span>
+        </div>
+        <div id="gnew" class="flex flex-wrap gap-1.5 p-3 text-sm"><span class="empty text-zinc-500">none so far</span></div>
+      </div>
+      <div class="rounded-xl border border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-900">
+        <div class="flex items-baseline justify-between border-b border-zinc-200 px-4 py-2 dark:border-zinc-800">
+          <h2 class="text-sm font-medium">Glyphs known from memory</h2><span id="gknown-n" class="text-xs text-zinc-500"></span>
+        </div>
+        <div id="gknown" class="flex flex-wrap gap-1.5 p-3 text-sm"></div>
+      </div>
+      <p id="gpending" class="px-1 text-xs text-zinc-500"></p>
+    </div>
+  </section>
 </main>
+
 <script>
 const $ = s => document.querySelector(s);
-let idx = null, sub = null;
 
+/* ---------- theme ---------- */
+function setTheme(dark) {
+  document.documentElement.classList.toggle('dark', dark);
+  document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+  localStorage.setItem('theme', dark ? 'dark' : 'light');
+  $('#theme').textContent = dark ? '☀' : '☾';
+  document.querySelectorAll('canvas.glyph').forEach(c => drawGlyph(c));
+}
+$('#theme').textContent = document.documentElement.classList.contains('dark') ? '☀' : '☾';
+$('#theme').addEventListener('click', () => setTheme(!document.documentElement.classList.contains('dark')));
+
+/* ---------- file selection ---------- */
+let idx = null, sub = null;
 function pick(list) {
   for (const f of list) {
     const n = f.name.toLowerCase();
@@ -109,17 +140,17 @@ function pick(list) {
 }
 $('#files').addEventListener('change', e => pick(e.target.files));
 const drop = $('#drop');
-drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
-drop.addEventListener('dragleave', () => drop.classList.remove('over'));
-drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); pick(e.dataTransfer.files); });
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('border-sky-500'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('border-sky-500'));
+drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('border-sky-500'); pick(e.dataTransfer.files); });
 
+/* ---------- log & progress ---------- */
 const t0 = { start: 0 };
 function say(line) {
-  const l = $('#log'); l.hidden = false;
+  const l = $('#log');
   const t = t0.start ? ((Date.now() - t0.start) / 1000).toFixed(1).padStart(6) + 's  ' : '';
   l.textContent += t + line + '\n'; l.scrollTop = l.scrollHeight;
 }
-
 function describe(e) {
   switch (e.event) {
     case 'queued': return e.position > 1 ? `queued at position ${e.position}; ${e.cues} cues` : `queued; ${e.cues} cues`;
@@ -137,7 +168,6 @@ function describe(e) {
     default: return e.event;
   }
 }
-
 const prog = { total: 0, resolved: 0, vlmUsed: 0, vlmBudget: null, phase: '' };
 function progressUpdate(e) {
   if (e.cues) prog.total = e.cues;
@@ -147,36 +177,81 @@ function progressUpdate(e) {
   if (e.event === 'probe') prog.phase = e.mode === 'exact' ? 'reading from memory' : 'learning the font';
   if (e.event === 'round') prog.phase = `round ${e.round}: ${e.unresolved} cues still unresolved`;
   if (e.event === 'done') { prog.phase = 'done'; prog.resolved = prog.total; }
-  const p = $('#progress'); p.hidden = false;
+  if (e.event === 'error') prog.phase = 'failed';
   const pct = prog.total ? Math.round(100 * prog.resolved / prog.total) : 0;
-  const fill = p.querySelector('.fill'); fill.style.width = pct + '%'; fill.classList.toggle('done', e.event === 'done');
+  const fill = $('#fill'); fill.style.width = pct + '%';
+  fill.classList.toggle('bg-emerald-500', e.event === 'done'); fill.classList.toggle('bg-sky-500', e.event !== 'done');
+  const secs = t0.start ? Math.round((Date.now() - t0.start) / 1000) : 0;
   $('#pleft').textContent = `${prog.resolved} / ${prog.total} cues (${pct}%) – ${prog.phase}`;
-  $('#pright').textContent = prog.vlmBudget ? `${prog.vlmUsed} / ${prog.vlmBudget} vision requests` : (prog.vlmUsed ? `${prog.vlmUsed} vision requests` : '');
+  $('#pright').textContent = (prog.vlmBudget ? `${prog.vlmUsed} / ${prog.vlmBudget} vision requests · ` : prog.vlmUsed ? `${prog.vlmUsed} vision requests · ` : '') + `${secs}s`;
 }
 
+/* ---------- transcript ---------- */
 const rows = new Map();
 const hms = ms => { const s = Math.floor(ms / 1000); return `${String(Math.floor(s / 3600)).padStart(2, '0')}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
-const srcLabel = s => s === 'nocr' || s === 'nocr-arbitrated' ? 'memory' : s === 'fallback' ? 'unresolved' : 'vision';
+const srcKind = s => s === 'nocr' || s === 'nocr-arbitrated' ? 'memory' : s === 'fallback' ? 'unresolved' : 'vision';
+const dotClass = { memory: 'bg-zinc-400', vision: 'bg-sky-500', unresolved: 'bg-amber-500' };
 function transcriptAdd(items) {
-  const box = $('#transcript'); box.hidden = false;
+  const box = $('#transcript'); $('#tbox').hidden = false;
   const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
   for (const c of items) {
     let row = rows.get(c.i);
     if (!row) {
       row = document.createElement('div'); row.dataset.i = c.i; rows.set(c.i, row);
-      // keep rows in cue order: insert before the first row with a larger index
       let after = null;
       for (const r of box.children) { if (+r.dataset.i > c.i) { after = r; break; } }
       box.insertBefore(row, after);
     }
-    row.className = 'row fresh ' + (c.src === 'fallback' ? 'fallback' : srcLabel(c.src) === 'vision' ? 'vision' : '');
-    row.innerHTML = `<span class="ts">${hms(c.start)}</span><span class="txt"></span><span class="src">${srcLabel(c.src)}</span>`;
-    row.querySelector('.txt').textContent = c.text.replace(/<\/?[biu]>/g, '');
-    setTimeout(() => row.classList.remove('fresh'), 1300);
+    const kind = srcKind(c.src);
+    row.className = 'flash grid grid-cols-[4.6em_1fr_auto] items-start gap-2 px-3 py-1';
+    row.innerHTML = `<span class="pt-0.5 font-mono text-xs tabular-nums text-zinc-500">${hms(c.start)}</span>
+      <span class="whitespace-pre-wrap ${kind === 'unresolved' ? 'text-amber-600 dark:text-amber-400' : ''}"></span>
+      <span class="mt-1.5 inline-block h-2 w-2 rounded-full ${dotClass[kind]}" title="${kind}"></span>`;
+    row.children[1].textContent = c.text.replace(/<\/?[biu]>/g, '');
+    setTimeout(() => row.classList.remove('flash'), 1500);
   }
   if (stick) box.scrollTop = box.scrollHeight;
 }
 
+/* ---------- glyph tables ---------- */
+function unpack(b64, w, h) {
+  const bin = atob(b64), bits = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) bits[i] = (bin.charCodeAt(i >> 3) >> (7 - (i & 7))) & 1;
+  return bits;
+}
+function drawGlyph(c) {
+  const { w, h } = c.dataset, bits = unpack(c.dataset.bits, +w, +h);
+  const ctx = c.getContext('2d'); ctx.clearRect(0, 0, c.width, c.height);
+  ctx.fillStyle = getComputedStyle(c).color;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (bits[y * w + x]) ctx.fillRect(x, y, 1, 1);
+}
+const glyphEls = new Map();
+function glyphAdd(items, known, pending) {
+  $('#gbox').hidden = false;
+  for (const g of items) {
+    let el = glyphEls.get(g.key);
+    if (!el) {
+      el = document.createElement('div'); glyphEls.set(g.key, el);
+      const box = $(g.new ? '#gnew' : '#gknown');
+      const empty = box.querySelector('.empty'); if (empty) empty.remove();
+      box.appendChild(el);
+    }
+    const scale = 32 / g.h;
+    el.className = 'flash flex items-center gap-1.5 rounded-md border border-zinc-200 px-1.5 py-1 dark:border-zinc-800';
+    el.title = `${g.n}× in this file`;
+    el.innerHTML = `<canvas class="glyph text-zinc-800 dark:text-zinc-200" width="${g.w}" height="${g.h}" style="height:32px;width:${Math.round(g.w * scale)}px;image-rendering:pixelated" data-w="${g.w}" data-h="${g.h}"></canvas>
+      <span class="${g.style.includes('i') ? 'italic' : ''} ${g.style.includes('b') ? 'font-bold' : ''}"></span>
+      <span class="text-[10px] text-zinc-400">${g.n}</span>`;
+    el.children[1].textContent = g.label;
+    const c = el.querySelector('canvas'); c.dataset.bits = g.bits; drawGlyph(c);
+    setTimeout(() => el.classList.remove('flash'), 1500);
+  }
+  $('#gnew-n').textContent = $('#gnew').querySelectorAll('canvas').length + ' shapes';
+  $('#gknown-n').textContent = $('#gknown').querySelectorAll('canvas').length + ' shapes';
+  $('#gpending').textContent = pending ? `${pending} shapes in this file are not yet confirmed (unknown or seen only once).` : '';
+}
+
+/* ---------- summary & run ---------- */
 function summarize(e) {
   const by = e.by_source || {};
   const nocr = (by.nocr || 0) + (by['nocr-arbitrated'] || 0);
@@ -184,16 +259,18 @@ function summarize(e) {
   const bad = e.unresolved || 0;
   const parts = [`${e.cues} cues`, `${nocr} read from the glyph memory`];
   if (vlm) parts.push(`${vlm} read by the vision model (${e.vlm_used} requests)`);
-  const cls = bad ? 'warn' : 'ok';
   const tail = bad ? `${bad} cues contain unknown glyphs (�) – search the file for that character` : 'every cue resolved';
-  $('#summary').innerHTML = `<span class="${cls}">${tail}.</span> ${parts.join(', ')}.`;
+  $('#summary').innerHTML = `<span class="${bad ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}">${tail}.</span> ${parts.join(', ')}.`;
 }
-
-$('#go').addEventListener('click', async () => {
-  $('#go').disabled = true; $('#result').innerHTML = ''; $('#summary').innerHTML = ''; $('#log').textContent = '';
-  rows.clear(); $('#transcript').innerHTML = ''; $('#transcript').hidden = true; $('#progress').hidden = true;
+function reset() {
+  $('#idle').hidden = true; $('#progress').hidden = false; $('#logbox').open = true;
+  $('#result').innerHTML = ''; $('#summary').innerHTML = ''; $('#log').textContent = '';
+  rows.clear(); $('#transcript').innerHTML = ''; $('#tbox').hidden = true;
+  glyphEls.clear(); $('#gnew').innerHTML = '<span class="empty text-zinc-500">none so far</span>'; $('#gknown').innerHTML = ''; $('#gpending').textContent = ''; $('#gbox').hidden = true;
   Object.assign(prog, { total: 0, resolved: 0, vlmUsed: 0, vlmBudget: null, phase: 'preparing…' });
-  t0.start = Date.now();
+}
+$('#go').addEventListener('click', async () => {
+  $('#go').disabled = true; reset(); t0.start = Date.now();
   const fd = new FormData(); fd.append('idx', idx); fd.append('sub', sub);
   say(`uploading ${idx.name} (${(idx.size / 1024).toFixed(0)} KB) and ${sub.name} (${(sub.size / 1048576).toFixed(1)} MB)…`);
   const r = await fetch('/api/jobs', { method: 'POST', body: fd });
@@ -204,18 +281,19 @@ $('#go').addEventListener('click', async () => {
       : r.status === 429 ? 'too many jobs from your address; try again later'
       : r.status >= 500 ? 'the server is unavailable right now (' + r.status + ')'
       : 'HTTP ' + r.status;
-    say('rejected: ' + why); $('#go').disabled = false; return;
+    say('rejected: ' + why); prog.phase = 'rejected'; progressUpdate({}); $('#go').disabled = false; return;
   }
   const { id } = await r.json();
   const es = new EventSource(`/api/jobs/${id}/events`);
   es.onmessage = m => {
     const e = JSON.parse(m.data);
     if (e.event === 'cues') { transcriptAdd(e.items); progressUpdate(e); return; }
+    if (e.event === 'glyphs') { glyphAdd(e.items, e.known, e.pending); return; }
     say(describe(e)); progressUpdate(e);
     if (e.event === 'done') {
-      es.close(); summarize(e);
-      $('#result').innerHTML = `<a class="dl" href="/api/jobs/${id}/srt">Download ${idx.name.replace(/\.idx$/i, '.srt')}</a>
-        <a href="/api/jobs/${id}/report" style="margin-left:12px;font-size:14px">report (JSON)</a>`;
+      es.close(); summarize(e); $('#logbox').open = false;
+      $('#result').innerHTML = `<a class="rounded-md bg-sky-600 px-4 py-2 text-sm font-medium text-white hover:bg-sky-500" href="/api/jobs/${id}/srt">Download ${idx.name.replace(/\.idx$/i, '.srt')}</a>
+        <a class="text-sm text-sky-700 hover:underline dark:text-sky-400" href="/api/jobs/${id}/report">report (JSON)</a>`;
       $('#go').disabled = false;
     } else if (e.event === 'error') { es.close(); $('#go').disabled = false; }
   };
@@ -225,7 +303,6 @@ $('#go').addEventListener('click', async () => {
 fetch('/api/stats').then(r => r.json()).then(s => {
   $('#fonts').textContent = s.fonts;
   $('#limits').textContent = `${s.limits.jobs_per_hour} jobs per hour, ${s.limits.vlm_per_day} vision-model requests per day, at most ${s.limits.max_vlm_cues} per job, files up to ${s.limits.max_cues} cues`;
-  if (s.queued || s.running) say(`${s.running + s.queued} job(s) currently in progress on this server`);
 }).catch(() => {});
 </script>
 </body>

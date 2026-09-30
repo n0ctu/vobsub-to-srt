@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -72,6 +73,21 @@ def _unknown_keys(db: GlyphDB, st: CueState) -> set[str]:
             v = db.lookup(g.key, g.top_rel)
             if v is None or _decide(v)[0] in (None, ""):
                 out.add(g.key)
+    return out
+
+
+def glyph_items(db: GlyphDB, glyphs: dict, keyfreq: Counter) -> dict[str, dict]:
+    """Trusted glyph shapes of a file, for display: key -> {label, w, h, bits, n, style}.
+    Shapes without a trusted label (unknown, quarantined, fragments) are left out."""
+    out: dict[str, dict] = {}
+    for key, g in glyphs.items():
+        v = db.lookup(key, g.top_rel)
+        label = _decide(v)[0] if v else None
+        if not label:
+            continue
+        out[key] = {"key": key, "label": label, "w": g.w, "h": g.h,
+                    "bits": base64.b64encode(np.packbits(g.bits).tobytes()).decode(),
+                    "n": keyfreq[key], "style": v.style()}
     return out
 
 
@@ -185,6 +201,26 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
         if items:
             emit("cues", items=items, resolved=len(emitted))
 
+    shown: dict[str, tuple[str, str]] = {}      # key -> (label, style) last sent
+    first_glyph_flush = [True]
+
+    def flush_glyphs() -> None:
+        """Send glyph shapes whose trusted label is new or changed (live glyph tables)."""
+        if not opts.progress:
+            return
+        current = glyph_items(db, sample_glyph, keyfreq)
+        new_flag = not first_glyph_flush[0]
+        items = []
+        for key, it in current.items():
+            sig = (it["label"], it["style"])
+            if shown.get(key) != sig:
+                shown[key] = sig
+                items.append({**it, "new": new_flag})
+        first_glyph_flush[0] = False
+        pending = len(keyfreq) - len(current)
+        if items:
+            emit("glyphs", items=items, known=len(current), pending=pending)
+
     def emit(event: str, **data) -> None:
         if opts.progress:
             opts.progress({"event": event, "file": idx_path.name, "cues": len(states),
@@ -193,6 +229,7 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
     db, cov, probe_mode = probe(opts.db_dir, keyfreq, sample_glyph, opts.min_probe_coverage, charset)
     log.info("using DB %s (%s, coverage %.1f%%)", db.path.name if db.path else db.name, probe_mode, 100 * cov)
     emit("probe", db=db.name, mode=probe_mode, coverage=round(cov, 4))
+    flush_glyphs()
     db.attach_private(opts.private_dir, opts.word_memory)
     # Geometry votes accumulate across files: what the DB already holds plus this file's votes.
     # (Decisions compare the two counts, so re-running a file cannot flip them.) The votes are
@@ -347,6 +384,7 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
                     else:
                         unresolved.append(st)
                 flush_cues()
+                flush_glyphs()
                 if not unresolved or opts.mode == "nocr-only":
                     break
                 if budget_left() == 0:
@@ -370,6 +408,7 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
                 await _vlm_batch(batch, vlm_cue, apply_vlm, failures, "vlm")
                 await requery_misfits()
                 flush_cues()
+                flush_glyphs()
                 if db.dirty:
                     db.save()
             if recheck == 3 or opts.mode == "nocr-only":
@@ -455,6 +494,7 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
         _save_debug(opts, st, "failed")
 
     flush_cues()
+    flush_glyphs()
     if db.dirty:
         db.save()
 

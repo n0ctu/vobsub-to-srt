@@ -255,6 +255,17 @@ async def index():
     return (STATIC / "index.html").read_text(encoding="utf-8")
 
 
+_STATIC_TYPES = {".css": "text/css; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".svg": "image/svg+xml"}
+
+
+@app.get("/static/{name}")
+async def static_file(name: str):
+    path = STATIC / name
+    if "/" in name or "\\" in name or path.suffix not in _STATIC_TYPES or not path.is_file():
+        raise HTTPException(404)
+    return FileResponse(path, media_type=_STATIC_TYPES[path.suffix], headers={"Cache-Control": "public, max-age=3600"})
+
+
 # ---------------------------------------------------------------- worker & housekeeping
 
 async def _run(job: Job) -> None:
