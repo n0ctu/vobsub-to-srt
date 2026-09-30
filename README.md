@@ -129,6 +129,34 @@ releases). All state lives in the `data/` volume: `glyph-memory/` is seeded from
 first start and grows from there, `word-memory/`, `dictionaries/`, `cache/` and `out/` next to it.
 `compose.yml` includes Watchtower, which pulls a new `:latest` and replaces the container automatically.
 
+## Web app
+
+`uv sync --extra web && uv run vobsub-to-srt-web` (or `docker compose up -d`) serves a one-page app on
+port 8000: drop the `.idx` and `.sub`, watch the progress, download the SRT. Design:
+
+- one worker converts jobs one after another (it is the only writer of the shared glyph memory and
+  the global VLM throttle); the page shows the queue position;
+- uploads and results live under `<data>/jobs/` and are deleted after `VTS_JOB_TTL` (1 h); the
+  uploaded files are removed as soon as the job ends; the VLM cache is per job, so no subtitle text
+  survives a job — only the glyph memory grows;
+- per-IP limits: `VTS_JOBS_PER_HOUR` (6) and `VTS_VLM_PER_DAY` (600 VLM requests); when a client's
+  daily allowance is used up its jobs still run, teacher-less; per job `VTS_MAX_VLM_CUES` (300);
+- input caps: `.sub` ≤ `VTS_MAX_SUB_MB` (64), ≤ `VTS_MAX_CUES` (3000) cues; job timeout 15 min;
+- `VTS_TRUST_PROXY=1` takes the client address from `X-Forwarded-For` (only behind your own proxy).
+
+Reverse proxy (nginx on another host, TLS terminated there):
+
+```nginx
+location / {
+    proxy_pass http://10.0.0.5:8080;            # the private address bound in compose.yml
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header Host $host;
+    client_max_body_size 80m;                   # a .sub is 5-10 MB per track
+    proxy_read_timeout 900s;                    # progress stream while a new font is learned
+    proxy_buffering off;
+}
+```
+
 ## As a library / service
 
 ```python

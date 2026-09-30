@@ -1,4 +1,4 @@
-# vobsub-to-srt CLI image. State lives in /data (mount it): glyph-memory/, word-memory/,
+# vobsub-to-srt image: CLI by default, `web` as first argument starts the web app on :8000. State lives in /data (mount it): glyph-memory/, word-memory/,
 # dictionaries/, cache/, out/. The baseline glyph memory from the repo seeds /data/glyph-memory
 # on first start (see docker/entrypoint.sh).
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
@@ -8,11 +8,11 @@ WORKDIR /app
 
 # dependencies first (cached layer), then the project
 COPY pyproject.toml uv.lock ./
-RUN uv sync --locked --no-dev --no-install-project
+RUN uv sync --locked --no-dev --no-install-project --extra web
 COPY vobsub_to_srt ./vobsub_to_srt
 COPY glyph-memory ./glyph-memory
 COPY README.md LICENSE ./
-RUN uv sync --locked --no-dev
+RUN uv sync --locked --no-dev --extra web
 
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh && mkdir -p /data

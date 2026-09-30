@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vobsub-to-srt</title>
+<style>
+  :root { color-scheme: light dark; --fg: #1a1a1a; --bg: #fafafa; --muted: #6b6b6b; --line: #d8d8d8; --acc: #2b6cb0; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #e8e8e8; --bg: #141414; --muted: #9a9a9a; --line: #333; --acc: #63a4ff; } }
+  body { margin: 0; padding: 24px 16px 48px; font: 16px/1.5 system-ui, sans-serif; color: var(--fg); background: var(--bg); }
+  main { max-width: 640px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  p.sub { color: var(--muted); margin: 0 0 20px; }
+  #drop { border: 2px dashed var(--line); border-radius: 10px; padding: 32px 16px; text-align: center; cursor: pointer; }
+  #drop.over { border-color: var(--acc); }
+  #drop input { display: none; }
+  .files { margin: 12px 0; color: var(--muted); font-size: 14px; }
+  button { font: inherit; padding: 8px 18px; border-radius: 6px; border: 1px solid var(--line); background: var(--acc); color: #fff; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  pre#log { margin: 20px 0 0; padding: 12px; min-height: 80px; border: 1px solid var(--line); border-radius: 6px; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+  a.dl { display: inline-block; margin-top: 14px; padding: 10px 18px; border-radius: 6px; background: var(--acc); color: #fff; text-decoration: none; }
+  footer { margin-top: 28px; color: var(--muted); font-size: 13px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>VobSub → SRT</h1>
+  <p class="sub">Drop the <code>.idx</code> and <code>.sub</code> of one subtitle track. Known fonts convert in seconds; a new font is learned once with a vision model and is then free for everyone.</p>
+
+  <label id="drop">
+    <input type="file" id="files" multiple accept=".idx,.sub">
+    <span id="droptext">Drop both files here, or click to choose</span>
+  </label>
+  <div class="files" id="chosen"></div>
+  <button id="go" disabled>Convert</button>
+
+  <pre id="log" hidden></pre>
+  <div id="result"></div>
+
+  <footer>Uploads and results are deleted after an hour. Nothing of the subtitle text is kept; only the shapes of the letters (the font) are added to the shared glyph memory. <span id="stats"></span></footer>
+</main>
+<script>
+const $ = s => document.querySelector(s);
+let idx = null, sub = null;
+
+function pick(list) {
+  for (const f of list) {
+    const n = f.name.toLowerCase();
+    if (n.endsWith('.idx')) idx = f; else if (n.endsWith('.sub')) sub = f;
+  }
+  $('#chosen').textContent = [idx && idx.name, sub && sub.name].filter(Boolean).join('  +  ') || '';
+  $('#go').disabled = !(idx && sub);
+}
+$('#files').addEventListener('change', e => pick(e.target.files));
+const drop = $('#drop');
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => { e.preventDefault(); drop.classList.remove('over'); pick(e.dataTransfer.files); });
+
+function say(line) { const l = $('#log'); l.hidden = false; l.textContent += line + '\n'; l.scrollTop = l.scrollHeight; }
+
+function describe(e) {
+  switch (e.event) {
+    case 'queued': return `queued (position ${e.position}), ${e.cues} cues`;
+    case 'started': return 'started';
+    case 'no_vlm': return 'no vision model configured on this server: unknown glyphs will be marked �';
+    case 'probe': return e.mode === 'exact' ? `font known (${Math.round(e.coverage * 100)}% of glyphs)`
+                : e.mode.startsWith('teacher') ? `similar font at another size (${e.mode}); learning the rest`
+                : 'new font: learning it from the vision model';
+    case 'round': return `round ${e.round}: ${e.unresolved} cues unresolved, asking the vision model about ${e.batch}` + (e.vlm_budget ? ` (${e.vlm_used}/${e.vlm_budget} requests used)` : '');
+    case 'retry': return `retrying ${e.cues} cues with a stricter prompt`;
+    case 'budget_exhausted': return `vision-model budget for this job used up; ${e.unresolved} cues will contain �`;
+    case 'done': return `done: ${e.unresolved ? e.unresolved + ' cues contain unknown glyphs (�)' : 'all cues resolved'}` + (e.seconds ? ` in ${e.seconds}s` : '');
+    case 'error': return 'error: ' + e.message;
+    default: return e.event;
+  }
+}
+
+$('#go').addEventListener('click', async () => {
+  $('#go').disabled = true; $('#result').innerHTML = ''; $('#log').textContent = '';
+  const fd = new FormData(); fd.append('idx', idx); fd.append('sub', sub);
+  say('uploading…');
+  const r = await fetch('/api/jobs', { method: 'POST', body: fd });
+  if (!r.ok) { const t = await r.json().catch(() => ({})); say('rejected: ' + (t.detail || r.status)); $('#go').disabled = false; return; }
+  const { id } = await r.json();
+  const es = new EventSource(`/api/jobs/${id}/events`);
+  es.onmessage = m => {
+    const e = JSON.parse(m.data);
+    say(describe(e));
+    if (e.event === 'done') {
+      es.close();
+      $('#result').innerHTML = `<a class="dl" href="/api/jobs/${id}/srt">Download ${idx.name.replace(/\.idx$/i, '.srt')}</a>`;
+      $('#go').disabled = false;
+    } else if (e.event === 'error') { es.close(); $('#go').disabled = false; }
+  };
+  es.onerror = () => { say('connection lost; the job continues – reload to check'); es.close(); $('#go').disabled = false; };
+});
+
+fetch('/api/stats').then(r => r.json()).then(s => {
+  $('#stats').textContent = `${s.fonts} fonts known. Limits: ${s.limits.jobs_per_hour} jobs/hour, ${s.limits.vlm_per_day} vision-model requests/day per address.`;
+}).catch(() => {});
+</script>
+</body>
+</html>
