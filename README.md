@@ -43,6 +43,7 @@ warning that a VLM would be needed to learn it. So a clone works offline for the
 | `--batch-size` | 16 | cues sent to the VLM per round before re-matching |
 | `--track` | 0 | subtitle track of a multi-track `.idx` |
 | `--context` | 12 | previous cues given to the VLM as reference, 0 = off |
+| `--max-vlm-cues` | none | cap on VLM requests per file; beyond it the file is finished teacher-less (`�` for unknown glyphs) |
 | `--lexicon` | `auto` | tie-break for pixel-identical I/l: `auto` (wordfreq, then Hunspell), `wordfreq`, `hunspell`, `off` |
 | `--keep-special-chars` | off | keep typographic variants instead of folding them (see below) |
 | `--tool` | off | VLM submits transcripts via a forced tool call instead of plain text |
@@ -115,6 +116,31 @@ records its character set, so simplified and literal DBs (`*.literal.json`) neve
 
 Prompts live in `vobsub_to_srt/prompts.py`. The transcription prompt demands a literal,
 letter-by-letter reading (typos kept); a planned spell-check pass will get its own prompt.
+
+## Docker
+
+```sh
+mkdir -p data/in && cp .env.example .env            # endpoint optional: without it, teacher-less
+docker compose run --rm vobsub-to-srt /data/in/movie.idx      # -> data/out/movie.srt
+```
+
+The image `ghcr.io/n0ctu/vobsub-to-srt:latest` is built by CI from `main` (tags `vX.Y.Z` from
+releases). All state lives in the `data/` volume: `glyph-memory/` is seeded from the image's baseline on
+first start and grows from there, `word-memory/`, `dictionaries/`, `cache/` and `out/` next to it.
+`compose.yml` includes Watchtower, which pulls a new `:latest` and replaces the container automatically.
+
+## As a library / service
+
+```python
+from vobsub_to_srt.job import run_job_sync, JobConfig
+res = run_job_sync("movie.idx", JobConfig(max_vlm_cues=300), progress=print)
+res.srt, res.unresolved, res.vlm_used, res.budget_exhausted, res.report
+```
+
+`run_job` isolates one conversion: per-job VLM cache and temp files (removed afterwards, so no
+subtitle text persists across jobs), a VLM budget, progress events (`probe`, `round`, `retry`,
+`budget_exhausted`, `done`, `no_vlm`), and an optional per-job endpoint (`JobConfig(base_url=,
+api_key=, model=)` for bring-your-own-key). Only the shared glyph memory is written.
 
 ## Development
 

@@ -1,0 +1,19 @@
+# Usage on a host with Docker:
+#   mkdir -p data/in && cp .env.example .env   # fill in the VLM endpoint (optional: teacher-less without)
+#   docker compose run --rm vobsub-to-srt /data/in/movie.idx      # SRT appears in data/out/
+# Watchtower pulls new :latest images and replaces the containers automatically.
+services:
+  vobsub-to-srt:
+    image: ghcr.io/n0ctu/vobsub-to-srt:latest
+    env_file: .env
+    volumes:
+      - ./data:/data
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+
+  watchtower:
+    image: containrrr/watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: --label-enable --cleanup --interval 3600

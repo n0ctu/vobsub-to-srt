@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from collections import Counter
+from typing import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -38,6 +39,8 @@ class Options:
     train_until: float = 0.01            # stop "training" when unknown glyph occurrences < this share
     min_probe_coverage: float = 0.5
     placeholder: str = "�"
+    max_vlm_cues: int | None = None      # API requests per file; when used up, finish teacher-less
+    progress: Callable[[dict], None] | None = None   # called with {"event": ..., ...} at each stage
     context: int = 12                    # previous transcribed cues passed to the VLM as reference (0 = off)
     track: int = 0
     rescale: float | None = None         # testing only: resample masks to simulate another resolution
@@ -157,8 +160,21 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
     log.info("%s: %d cues, %d glyphs, %d unique shapes, gap threshold %.1f px (%.1fs)",
              idx_path.name, len(states), sum(keyfreq.values()), len(keyfreq), gap_t, time.time() - t0)
 
+    budget = {"used": 0, "exhausted": False}
+
+    def budget_left() -> int:
+        if opts.max_vlm_cues is None:
+            return 10 ** 9
+        return max(0, opts.max_vlm_cues - budget["used"])
+
+    def emit(event: str, **data) -> None:
+        if opts.progress:
+            opts.progress({"event": event, "file": idx_path.name, "cues": len(states),
+                           "vlm_used": budget["used"], "vlm_budget": opts.max_vlm_cues, **data})
+
     db, cov, probe_mode = probe(opts.db_dir, keyfreq, sample_glyph, opts.min_probe_coverage, charset)
     log.info("using DB %s (%s, coverage %.1f%%)", db.path.name if db.path else db.name, probe_mode, 100 * cov)
+    emit("probe", db=db.name, mode=probe_mode, coverage=round(cov, 4))
     db.attach_private(opts.private_dir, opts.word_memory)
     # Geometry votes accumulate across files: what the DB already holds plus this file's votes.
     # (Decisions compare the two counts, so re-running a file cannot flip them.) The votes are
@@ -215,10 +231,13 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
             vlm_raw[st.cue.index] = text
             return fold(text)
         png = mask_to_png(st.mask, scale=3 if strict else 2)
-        text = await client.transcribe(png, max(1, len(st.lines)), lang, strict=strict,
-                                       context=history(st) if opts.context else None)
+        text, cached = await client.transcribe_ex(png, max(1, len(st.lines)), lang, strict=strict,
+                                                  context=history(st) if opts.context else None)
+        if not cached:
+            budget["used"] += 1
         vlm_raw[st.cue.index] = text
         return fold(text)
+
 
     def apply_vlm(st: CueState, text: str, source: str) -> None:
         st.text = normalize_text(text)
@@ -284,19 +303,7 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
         """VLM text that does not fit the glyphs (dropped/added letters, wrong line count) is
         certainly wrong somewhere: ask again with the strict prompt at 3x scale, once per cue."""
         while requery:
-            todo = [st for st in requery if not st.requeried]
-            requery.clear()
-            for st in todo:
-                st.requeried = True
-            if todo:
-                log.info("re-asking %d cues whose VLM text misfits or contradicts the glyphs", len(todo))
-                await _vlm_batch(todo, lambda s_: vlm_cue(s_, strict=True), apply_vlm, failures, "vlm-strict")
-
-    async def requery_misfits() -> None:
-        """VLM text that does not fit the glyphs (dropped/added letters, wrong line count) is
-        certainly wrong somewhere: ask again with the strict prompt at 3x scale, once per cue."""
-        while requery:
-            todo = [st for st in requery if not st.requeried]
+            todo = [st for st in requery if not st.requeried][:budget_left()]
             requery.clear()
             for st in todo:
                 st.requeried = True
@@ -323,14 +330,22 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
                         unresolved.append(st)
                 if not unresolved or opts.mode == "nocr-only":
                     break
+                if budget_left() == 0:
+                    if not budget["exhausted"]:
+                        budget["exhausted"] = True
+                        log.warning("VLM budget of %d requests used up: %d cues stay unresolved and are "
+                                    "written teacher-less", opts.max_vlm_cues, len(unresolved))
+                        emit("budget_exhausted", unresolved=len(unresolved))
+                    break
                 # unknown glyph occurrences (file-wide) decide training vs inference phase
                 unknown = set()
                 for st in unresolved:
                     unknown |= _unknown_keys(db, st)
                 unk_share = sum(keyfreq[k] for k in unknown) / total_occ
                 phase = "training" if unk_share > opts.train_until else "inference"
-                batch = _select_batch(db, unresolved, keyfreq, opts.batch_size)
+                batch = _select_batch(db, unresolved, keyfreq, min(opts.batch_size, budget_left()))
                 rounds += 1
+                emit("round", round=rounds, phase=phase, unresolved=len(unresolved), batch=len(batch))
                 log.info("round %d [%s]: %d unresolved cues, unknown glyphs %.2f%% -> VLM on %d cues",
                          rounds, phase, len(unresolved), 100 * unk_share, len(batch))
                 await _vlm_batch(batch, vlm_cue, apply_vlm, failures, "vlm")
@@ -361,8 +376,9 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
                 break
 
     # ---- retries ----
-    if failures and client is not None:
-        retry = [st for st in states if st.cue.index in failures]
+    if failures and client is not None and budget_left() > 0:
+        retry = [st for st in states if st.cue.index in failures][:budget_left()]
+        emit("retry", cues=len(retry))
         log.info("retrying %d failed cues with strict prompt / 3x scale", len(retry))
         still: dict[int, str] = {}
         await _vlm_batch(retry, lambda s: vlm_cue(s, strict=True), apply_vlm, still, "vlm-retry")
@@ -423,6 +439,7 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
     report = {
         "file": str(idx_path), "language": lang, "charset": charset, "db": str(db.path), "probe": probe_mode, "probe_coverage": cov,
         "cues": len(states), "by_source": dict(stats),
+        "vlm_budget": {"max": opts.max_vlm_cues, "used": budget["used"], "exhausted": budget["exhausted"]},
         "vlm_requests": (client.calls - calls0[0]) if client else 0,
         "vlm_throttled_429": (client.throttled - calls0[2]) if client else 0,
         "vlm_cache_hits": (client.cache_hits - calls0[1]) if client else 0,
@@ -435,6 +452,8 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
     }
     (opts.out_dir / (idx_path.stem + ".report.json")).write_text(json.dumps(report, indent=2, ensure_ascii=False))
     log.info("%s -> %s | %s | %.1fs", idx_path.name, out, dict(stats), report["seconds"])
+    emit("done", srt=str(out), by_source=dict(stats), seconds=report["seconds"],
+         unresolved=stats.get("fallback", 0))
     if stats.get("fallback"):
         log.warning("%s: %d of %d cues contain glyphs this glyph memory does not know (marked %s); "
                     "configure a VLM endpoint to learn them", idx_path.name, stats["fallback"], len(states),

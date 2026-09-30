@@ -1,0 +1,8 @@
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!vobsub_to_srt/
+!glyph-memory/
+!docker/

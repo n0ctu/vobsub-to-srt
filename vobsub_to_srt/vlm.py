@@ -141,6 +141,12 @@ class VLMClient:
 
     async def transcribe(self, png: bytes, n_lines: int, lang: str = "en", strict: bool = False,
                          context: list[str] | None = None) -> str:
+        text, _ = await self.transcribe_ex(png, n_lines, lang, strict, context)
+        return text
+
+    async def transcribe_ex(self, png: bytes, n_lines: int, lang: str = "en", strict: bool = False,
+                            context: list[str] | None = None) -> tuple[str, bool]:
+        """Like transcribe(); also returns whether the answer came from the cache (no API request)."""
         user = TRANSCRIBE_USER.format(lang=LANG_NAMES.get(lang, lang), n=n_lines)
         if strict:
             user += TRANSCRIBE_STRICT_ADDENDUM
@@ -158,7 +164,7 @@ class VLMClient:
             cache_file = image_file
         if cache_file.exists():
             self.cache_hits += 1
-            return json.loads(cache_file.read_text())["text"]
+            return json.loads(cache_file.read_text())["text"], True
         payload = {
             "model": self.model,
             "temperature": 0,
@@ -199,7 +205,7 @@ class VLMClient:
                     tmp.replace(cache_file)
                     if not image_file.exists():
                         image_file.write_text(json.dumps({"text": text}, ensure_ascii=False))
-                    return text
+                    return text, False
             except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
                 last_err = e
                 attempt += 1

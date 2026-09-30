@@ -24,6 +24,8 @@ def main() -> None:
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--track", type=int, default=0)
     ap.add_argument("--context", type=int, default=12, help="previous cues given to the VLM as reference (0 = off)")
+    ap.add_argument("--max-vlm-cues", type=int, default=None,
+                    help="cap on VLM requests per file; beyond it the file is finished teacher-less")
     ap.add_argument("--tool", action="store_true", help="VLM submits transcripts via a forced tool call")
     ap.add_argument("--word-memory", action="store_true",
                     help="remember resolved words (stored in --word-memory-dir, never in the glyph memory)")
@@ -45,7 +47,7 @@ def main() -> None:
                         format="%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S")
     logging.getLogger("httpx").setLevel(logging.WARNING)
     opts = Options(db_dir=a.glyph_memory_dir, out_dir=a.out_dir, debug_dir=a.debug_dir, batch_size=a.batch_size,
-                   mode=a.mode, track=a.track, context=a.context,
+                   mode=a.mode, track=a.track, context=a.context, max_vlm_cues=a.max_vlm_cues,
                    rescale=a.debug_rescale, lexicon=a.lexicon,
                    keep_special_chars=a.keep_special_chars,
                    word_memory=a.word_memory, private_dir=a.word_memory_dir, download_dicts=not a.no_dict_download)
