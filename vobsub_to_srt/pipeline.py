@@ -403,11 +403,16 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
         st.text = res.text(opts.placeholder)
         st.source = "fallback"
         stats["fallback"] += 1
-        for li, ci, reason in res.problems():
-            items = res.lines[li]
-            g0 = st.lines[li].glyphs[items.glyph_spans[ci][0]] if ci < len(items.glyph_spans) else None
-            log.error("cue %d @%s line %d glyph %d (x=%s): %s [%s]", st.cue.index, fmt_ts(st.cue.start_ms),
-                      li + 1, ci + 1, g0.x if g0 else "?", reason, failures.get(st.cue.index, "not sent to VLM"))
+        problems = res.problems()
+        kinds = Counter(reason for _, _, reason in problems)
+        li, ci, reason = problems[0] if problems else (0, 0, "unresolved")
+        items = res.lines[li] if res.lines else None
+        g0 = st.lines[li].glyphs[items.glyph_spans[ci][0]] if items and ci < len(items.glyph_spans) else None
+        log.error("cue %d @%s: %s; first at line %d glyph %d (x=%s) [%s]", st.cue.index, fmt_ts(st.cue.start_ms),
+                  ", ".join(f"{n} x {k}" for k, n in kinds.most_common()), li + 1, ci + 1,
+                  g0.x if g0 else "?", failures.get(st.cue.index, "not sent to VLM"))
+        for li, ci, reason in problems:
+            log.debug("  cue %d line %d glyph %d: %s", st.cue.index, li + 1, ci + 1, reason)
         _save_debug(opts, st, "failed")
 
     if db.dirty:
@@ -430,6 +435,10 @@ async def process_file(idx_path: Path, client: VLMClient | None, opts: Options) 
     }
     (opts.out_dir / (idx_path.stem + ".report.json")).write_text(json.dumps(report, indent=2, ensure_ascii=False))
     log.info("%s -> %s | %s | %.1fs", idx_path.name, out, dict(stats), report["seconds"])
+    if stats.get("fallback"):
+        log.warning("%s: %d of %d cues contain glyphs this glyph memory does not know (marked %s); "
+                    "configure a VLM endpoint to learn them", idx_path.name, stats["fallback"], len(states),
+                    opts.placeholder)
     return report
 
 

@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 
 from .pipeline import Options, process_file
-from .vlm import VLMClient
+from .vlm import VLMClient, endpoint_configured
 
 
 def main() -> None:
@@ -50,6 +50,13 @@ def main() -> None:
                    keep_special_chars=a.keep_special_chars,
                    word_memory=a.word_memory, private_dir=a.word_memory_dir, download_dicts=not a.no_dict_download)
 
+    if a.mode != "nocr-only" and not endpoint_configured():
+        logging.getLogger("vobsub_to_srt").warning(
+            "no VLM endpoint configured (see .env.example): running without a teacher. Fonts in the "
+            "glyph memory are read normally; cues with unknown glyphs are written with %s and listed "
+            "in the report.", opts.placeholder)
+        opts.mode = "nocr-only"
+
     problems = []
     for p in a.inputs:
         if p.suffix.lower() != ".idx":
@@ -62,7 +69,7 @@ def main() -> None:
         raise SystemExit("\n".join(problems))
 
     async def run():
-        if a.mode == "nocr-only":
+        if opts.mode == "nocr-only":
             for p in a.inputs:
                 await process_file(p, None, opts)
             return

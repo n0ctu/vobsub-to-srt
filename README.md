@@ -28,9 +28,13 @@ They are not bundled because of their per-language licenses.
 
 ```sh
 uv run vobsub-to-srt Subs/*.idx                   # hybrid (default)
-uv run vobsub-to-srt --mode nocr-only X.idx       # no API calls; unknown glyphs become �
+uv run vobsub-to-srt --mode nocr-only X.idx       # never call the API; unknown glyphs become �
 uv run vobsub-to-srt --mode vlm-only X.idx        # VLM for every cue (reference / comparison)
 ```
+
+Without a VLM endpoint configured, the default mode runs teacher-less: fonts in the glyph memory
+are read as usual, and a file whose font is unknown is written with `�` for the unknown glyphs plus a
+warning that a VLM would be needed to learn it. So a clone works offline for the shipped baseline fonts.
 
 | Option | Default | |
 |---|---|---|

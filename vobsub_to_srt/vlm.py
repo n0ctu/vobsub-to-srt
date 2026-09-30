@@ -24,6 +24,14 @@ log = logging.getLogger(__name__)
 LANG_NAMES = {"en": "English", "de": "German", "fr": "French", "es": "Spanish", "it": "Italian"}
 
 
+ENV_KEYS = ("DEEPSEEK_BASE_URL", "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL")
+
+
+def endpoint_configured() -> bool:
+    load_env()
+    return all(os.environ.get(k) for k in ENV_KEYS)
+
+
 def load_env(path: Path = Path(".env")) -> None:
     if path.exists():
         for line in path.read_text().splitlines():
@@ -97,7 +105,7 @@ class VLMClient:
                  base_url: str | None = None, api_key: str | None = None, model: str | None = None,
                  timeout: float = 60.0, max_attempts: int = 4, use_tool: bool = False):
         load_env()
-        missing = [k for k in ("DEEPSEEK_BASE_URL", "DEEPSEEK_API_KEY", "DEEPSEEK_MODEL") if not os.environ.get(k)]
+        missing = [k for k in ENV_KEYS if not os.environ.get(k)]
         if missing and not (base_url and api_key and model):
             raise SystemExit(f"VLM endpoint not configured: set {', '.join(missing)} in .env "
                              "(see .env.example); any OpenAI-compatible vision model works")
