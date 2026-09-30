@@ -8,7 +8,8 @@ VLM allowance is used up its jobs still run, teacher-less. A queue cap bounds me
 
 Environment: VTS_DATA (default "."; glyph memory, word memory, dictionaries), VTS_JOB_TTL=3600,
 VTS_MAX_VLM_CUES=300, VTS_JOBS_PER_HOUR=6, VTS_VLM_PER_DAY=600, VTS_MAX_SUB_MB=64, VTS_MAX_CUES=3000,
-VTS_MAX_QUEUE=20, VTS_TRUST_PROXY=0, VTS_HOST, VTS_PORT.
+VTS_MAX_QUEUE=20, VTS_TRUST_PROXY=0, VTS_HOST, VTS_PORT, VTS_BASELINE_DIR (fonts shipped with the image).
+Aggregate usage counters are persisted to <data>/stats.json (see Stats: no per-user data).
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import json
 import logging
 import os
 import re
+import hashlib
 import secrets
 import time
 import uuid
@@ -50,6 +52,7 @@ MAX_CUES = _env_int("VTS_MAX_CUES", 3000)
 TRUST_PROXY = os.environ.get("VTS_TRUST_PROXY", "0") == "1"
 JOB_TIMEOUT = _env_int("VTS_JOB_TIMEOUT", 900)
 MAX_QUEUE = _env_int("VTS_MAX_QUEUE", 20)
+BASELINE_DIR = Path(os.environ.get("VTS_BASELINE_DIR", "/app/glyph-memory"))   # fonts shipped with the image
 
 STATIC = Path(__file__).parent / "static"
 _STEM = re.compile(r"[^A-Za-z0-9._-]+")
@@ -107,6 +110,101 @@ class Limiter:
         self.vlm[ip] = (day, (used if d == day else 0) + n)
 
 
+class Stats:
+    """Aggregate usage counters, persisted to <data>/stats.json. No per-user data: 'users' counts
+    distinct submitting addresses per day through a salted hash whose salt lives only in memory
+    and changes daily, so nothing that identifies a visitor is ever written."""
+
+    FIELDS = ("jobs", "cues", "memory_cues", "vision_cues", "unresolved_cues", "vlm_requests",
+              "seconds", "errors", "users")
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.data: dict = {k: 0 for k in self.FIELDS} | {"languages": {}, "since": time.time()}
+        try:
+            self.data.update(json.loads(path.read_text()))
+        except (OSError, ValueError):
+            pass
+        self.day = ""
+        self.salt = b""
+        self.seen: set[str] = set()
+        self._roll()
+
+    def _roll(self) -> None:
+        today = time.strftime("%Y-%m-%d")
+        if today != self.day:
+            if self.day:
+                self.data["users"] += len(self.seen)
+            self.day, self.salt, self.seen = today, secrets.token_bytes(16), set()
+            self.save()
+
+    def touch_user(self, ip: str) -> None:
+        self._roll()
+        self.seen.add(hashlib.sha256(self.salt + ip.encode()).hexdigest()[:24])
+
+    def add_job(self, report: dict) -> None:
+        self._roll()
+        by = report.get("by_source", {})
+        d = self.data
+        d["jobs"] += 1
+        d["cues"] += report.get("cues", 0)
+        d["memory_cues"] += by.get("nocr", 0) + by.get("nocr-arbitrated", 0)
+        d["vision_cues"] += sum(v for k, v in by.items() if k.startswith("vlm"))
+        d["unresolved_cues"] += by.get("fallback", 0)
+        d["vlm_requests"] += report.get("vlm_requests", 0)
+        d["seconds"] += report.get("seconds", 0)
+        lang = report.get("language") or "?"
+        d["languages"][lang] = d["languages"].get(lang, 0) + 1
+        self.save()
+
+    def add_error(self) -> None:
+        self.data["errors"] += 1
+        self.save()
+
+    def snapshot(self) -> dict:
+        self._roll()
+        return {**self.data, "users": self.data["users"] + len(self.seen)}
+
+    def save(self) -> None:
+        try:
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self.data))
+            tmp.replace(self.path)
+        except OSError:
+            log.warning("could not write %s", self.path)
+
+
+_glyph_cache: dict = {"key": None, "value": None}
+
+
+def glyph_stats() -> dict:
+    """Fonts and shapes in the glyph memory (cached by file names + mtimes; DBs are parsed lazily)."""
+    gm = DATA / "glyph-memory"
+    files = sorted(gm.glob("*.json")) if gm.is_dir() else []
+    key = tuple((f.name, f.stat().st_mtime_ns) for f in files)
+    if _glyph_cache["key"] == key:
+        return _glyph_cache["value"]
+    baseline = {f.name for f in BASELINE_DIR.glob("*.json")} if BASELINE_DIR.is_dir() else set()
+    shapes = italic = fused = 0
+    for f in files:
+        try:
+            d = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        for sh in d.get("shapes", []):
+            shapes += 1
+            for v in sh.get("variants", []):
+                if v.get("geo_italic", [0, 0])[1] > v.get("geo_italic", [0, 0])[0]:
+                    italic += 1
+                    break
+            if any(len(lab) > 1 for v in sh.get("variants", []) for lab in v.get("votes", {})):
+                fused += 1
+    value = {"fonts": len(files), "fonts_learned_here": sum(1 for f in files if f.name not in baseline),
+             "shapes": shapes, "italic_shapes": italic, "fused_shapes": fused}
+    _glyph_cache.update(key=key, value=value)
+    return value
+
+
 from contextlib import asynccontextmanager
 
 
@@ -125,6 +223,7 @@ app = FastAPI(title="vobsub-to-srt", docs_url=None, redoc_url=None, lifespan=lif
 jobs: dict[str, Job] = {}
 queue: asyncio.Queue = None  # type: ignore[assignment]  # created in lifespan()
 limiter = Limiter()
+stats_store = Stats(DATA / "stats.json")
 
 
 def client_ip(request: Request) -> str:
@@ -166,6 +265,7 @@ async def create_job(request: Request, idx: UploadFile, sub: UploadFile):
     stem = _STEM.sub("_", Path(idx.filename or "subtitle").stem)[:80] or "subtitle"
     job_id = uuid.uuid4().hex[:12] + secrets.token_hex(2)
     job = Job(job_id, stem, ip, upload=VobSubData(stem, idx_bytes, sub_bytes))
+    stats_store.touch_user(ip)
     jobs[job_id] = job
     job.push({"event": "queued", "position": queue.qsize() + 1, "cues": n})
     await queue.put(job_id)
@@ -236,11 +336,12 @@ async def job_report(job_id: str):
 
 @app.get("/api/stats")
 async def stats():
-    gm = DATA / "glyph-memory"
-    return {"fonts": len(list(gm.glob("*.json"))) if gm.is_dir() else 0, "queued": queue.qsize(),
+    g = glyph_stats()
+    return {"fonts": g["fonts"], "queued": queue.qsize(),
             "running": sum(1 for j in jobs.values() if j.status == "running"),
             "limits": {"jobs_per_hour": JOBS_PER_HOUR, "vlm_per_day": VLM_PER_DAY, "max_vlm_cues": MAX_VLM_CUES,
-                       "max_cues": MAX_CUES, "job_ttl": JOB_TTL}}
+                       "max_cues": MAX_CUES, "job_ttl": JOB_TTL},
+            "usage": stats_store.snapshot(), "glyphs": g}
 
 
 @app.get("/healthz")
@@ -283,6 +384,7 @@ async def _run(job: Job) -> None:
         job.result = result
         job.vlm_used = result.vlm_used
         limiter.add_vlm(job.ip, result.vlm_used)
+        stats_store.add_job(result.report)
         job.status = "done"
         if job.events[-1].get("event") != "done":
             job.push({"event": "done", "unresolved": result.unresolved})
@@ -290,6 +392,7 @@ async def _run(job: Job) -> None:
         log.exception("job %s failed", job.id)
         job.status = "error"
         job.error = f"{type(e).__name__}: {e}"[:300]
+        stats_store.add_error()
         job.push({"event": "error", "message": job.error})
     finally:
         job.upload = None                                   # uploads never outlive the job

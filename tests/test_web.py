@@ -20,7 +20,8 @@ def fake_run_job_sync(source, config, progress):
     progress({"event": "glyphs", "items": [{"key": "k1", "label": "H", "w": 4, "h": 5, "bits": "8A==", "n": 3,
                                             "style": "", "new": False}], "known": 1, "pending": 0})
     progress({"event": "done", "unresolved": 0, "seconds": 0.1})
-    return JobResult(srt="1\n00:00:00,000 --> 00:00:01,000\nHello\n", report={"by_source": {"nocr": 5}},
+    return JobResult(srt="1\n00:00:00,000 --> 00:00:01,000\nHello\n",
+                     report={"by_source": {"nocr": 4, "vlm": 1}, "cues": 5, "vlm_requests": 3, "seconds": 0.1, "language": "en"},
                      unresolved=0, vlm_used=3, budget_exhausted=False)
 
 
@@ -28,6 +29,7 @@ def fake_run_job_sync(source, config, progress):
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "DATA", tmp_path)
     monkeypatch.setattr(web.jobmod, "run_job_sync", fake_run_job_sync)
+    monkeypatch.setattr(web, "stats_store", web.Stats(tmp_path / "stats.json"))
     web.jobs.clear()
     web.limiter.__init__()
     with TestClient(web.app) as c:
@@ -111,3 +113,15 @@ def test_queue_cap(client, monkeypatch):
     monkeypatch.setattr(web, "MAX_QUEUE", 0)
     r = submit(client)
     assert r.status_code == 503 and "Retry-After" in r.headers
+
+
+def test_usage_stats_count_without_storing_users(client):
+    for _ in range(2):
+        wait_done(client, submit(client).json()["id"])
+    u = client.get("/api/stats").json()["usage"]
+    assert u["jobs"] == 2 and u["cues"] == 10 and u["memory_cues"] == 8 and u["vision_cues"] == 2
+    assert u["vlm_requests"] == 6 and u["languages"] == {"en": 2} and u["users"] == 1   # same address, one user
+    saved = json.loads((web.DATA / "stats.json").read_text())
+    assert saved["jobs"] == 2 and "users" in saved and "testclient" not in (web.DATA / "stats.json").read_text()
+    g = client.get("/api/stats").json()["glyphs"]
+    assert set(g) == {"fonts", "fonts_learned_here", "shapes", "italic_shapes", "fused_shapes"}

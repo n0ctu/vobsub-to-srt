@@ -154,6 +154,10 @@ port 8000: drop the `.idx` and `.sub`, watch the progress, download the SRT. Des
   ever written to disk (the `compose.yml` tmpfs for `/tmp` is belt and braces). `VTS_MAX_QUEUE` (20)
   bounds the memory held by waiting uploads.
 - `VTS_TRUST_PROXY=1` takes the client address from `X-Forwarded-For` (only behind your own proxy).
+- usage statistics (`/api/stats`, shown on the page): jobs, cues, memory vs. vision share, VLM
+  requests, processing time, languages, fonts and glyph shapes, persisted as plain counters in
+  `<data>/stats.json`; "users" counts distinct submitting addresses per day via a salted hash whose
+  salt lives only in memory and changes daily — no address is ever stored.
 - the page keeps a personal queue in the browser's localStorage: several tracks can be added and are
   submitted one after another; each finished SRT is fetched and stored client-side, so it can be
   downloaded again after the server's copy expired. Nothing about users is stored on the server.

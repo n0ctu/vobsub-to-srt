@@ -91,6 +91,12 @@
       </ul>
     </details>
 
+    <details class="rounded-lg border border-zinc-200 bg-white p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
+      <summary class="cursor-pointer font-medium text-zinc-800 dark:text-zinc-200">Statistics</summary>
+      <div id="stats" class="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3"></div>
+      <p id="stats-note" class="mt-3 text-xs text-zinc-500"></p>
+    </details>
+
     <footer class="text-xs text-zinc-500 dark:text-zinc-500">Free and open source, MIT license -
       <a href="https://github.com/n0ctu/vobsub-to-srt" rel="noopener" class="text-sky-700 hover:underline dark:text-sky-400">github.com/n0ctu/vobsub-to-srt</a> -
       a font that came out wrong? <a href="https://github.com/n0ctu/vobsub-to-srt/issues" rel="noopener" class="text-sky-700 hover:underline dark:text-sky-400">open an issue</a> -
@@ -542,9 +548,30 @@ async function resumeOne(job) {
 for (const job of jobs) if (job.status === 'queued' || job.status === 'running') resumeOne(job);
 renderQueue();
 if (jobs.length) select(jobs[jobs.length - 1].id);
+const fmt = n => new Intl.NumberFormat('en').format(Math.round(n));
+const dur = s => s < 3600 ? `${Math.round(s / 60)} min` : s < 86400 ? `${(s / 3600).toFixed(1)} h` : `${(s / 86400).toFixed(1)} d`;
+function tile(label, value, sub) {
+  return `<div class="rounded-md border border-zinc-200 px-3 py-2 dark:border-zinc-800"><div class="text-lg font-semibold tabular-nums text-zinc-900 dark:text-zinc-100">${value}</div><div class="text-xs">${label}${sub ? `<span class="text-zinc-400"> · ${sub}</span>` : ''}</div></div>`;
+}
 fetch('/api/stats').then(r => r.json()).then(s => {
   $('#fonts').textContent = s.fonts;
   $('#limits').textContent = `${s.limits.jobs_per_hour} jobs per hour, ${s.limits.vlm_per_day} vision-model requests per day, at most ${s.limits.max_vlm_cues} per job, files up to ${s.limits.max_cues} cues`;
+  const u = s.usage, g = s.glyphs;
+  if (!u || !g) return;
+  const memShare = u.cues ? Math.round(100 * u.memory_cues / u.cues) : 0;
+  const langs = Object.entries(u.languages || {}).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, v]) => `${k} ${v}`).join(', ');
+  $('#stats').innerHTML = [
+    tile('users', fmt(u.users), 'unique per day'),
+    tile('subtitles converted', fmt(u.jobs), u.errors ? `${u.errors} failed` : ''),
+    tile('cues read', fmt(u.cues), u.jobs ? `~${fmt(u.cues / u.jobs)} per file` : ''),
+    tile('read from memory', memShare + '%', u.unresolved_cues ? `${fmt(u.unresolved_cues)} unresolved` : 'no vision model needed'),
+    tile('vision requests', fmt(u.vlm_requests), u.jobs ? `~${(u.vlm_requests / u.jobs).toFixed(1)} per file` : ''),
+    tile('processing time', dur(u.seconds), u.jobs ? `~${Math.round(u.seconds / u.jobs)} s per file` : ''),
+    tile('fonts known', fmt(g.fonts), g.fonts_learned_here ? `${g.fonts_learned_here} learned here` : 'all from the baseline'),
+    tile('glyph shapes', fmt(g.shapes), `${fmt(g.italic_shapes)} italic, ${fmt(g.fused_shapes)} fused pairs`),
+    tile('languages', Object.keys(u.languages || {}).length, langs),
+  ].join('');
+  $('#stats-note').textContent = `Counting since ${new Date(u.since * 1000).toLocaleDateString()}. Users are counted per day through a salted hash that is never stored; everything else is a plain counter.`;
 }).catch(() => {});
 </script>
 </body>
