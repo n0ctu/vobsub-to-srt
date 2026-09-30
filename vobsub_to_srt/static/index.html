@@ -136,7 +136,15 @@ $('#go').addEventListener('click', async () => {
   const fd = new FormData(); fd.append('idx', idx); fd.append('sub', sub);
   say(`uploading ${idx.name} (${(idx.size / 1024).toFixed(0)} KB) and ${sub.name} (${(sub.size / 1048576).toFixed(1)} MB)…`);
   const r = await fetch('/api/jobs', { method: 'POST', body: fd });
-  if (!r.ok) { const t = await r.json().catch(() => ({})); say('rejected: ' + (t.detail || r.status)); $('#go').disabled = false; return; }
+  if (!r.ok) {
+    const t = await r.json().catch(() => null);
+    const why = t && t.detail ? t.detail
+      : r.status === 413 ? 'the upload was rejected as too large before it reached the converter (a reverse-proxy limit, not this app)'
+      : r.status === 429 ? 'too many jobs from your address; try again later'
+      : r.status >= 500 ? 'the server is unavailable right now (' + r.status + ')'
+      : 'HTTP ' + r.status;
+    say('rejected: ' + why); $('#go').disabled = false; return;
+  }
   const { id } = await r.json();
   const es = new EventSource(`/api/jobs/${id}/events`);
   es.onmessage = m => {
