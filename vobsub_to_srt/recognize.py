@@ -9,7 +9,7 @@ from collections import Counter
 
 import re as _re
 
-from .glyphdb import (CLUSTER_TOL, OVERRIDE_SHARE, OVERRIDE_VOTES, PROTO_MARGIN, PROTO_STRICT_TOL, PROTO_TOL, TOLERANT_MARGIN,
+from .glyphdb import (CLUSTER_TOL, OVERRIDE_SHARE, OVERRIDE_VOTES, PROTO_MARGIN, PROTO_MIN_PX, PROTO_STRICT_TOL, PROTO_TOL, TOLERANT_MARGIN,
                       GlyphDB, Variant, diff_ratio, is_strict, tol_for, topology, trusted_label)
 from .styling import inherit_punct_styles, majority_style, render_styled
 from .segment import Glyph, Line
@@ -198,19 +198,22 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
         fi = db.file_geo[0].get(g.key)
         fb = db.file_geo[1].get(g.key)
         ordered = []
-        for d, canon in db.proto_candidates(g.bits):
-            v = db.lookup(canon, g.top_rel)
+        for d, canon, px in db.proto_candidates(g.bits):
+            # a prototype hit at a baseline position the cluster has not seen: the nearest variant
+            # within a couple of pixels (rescaled tracks jitter vertically too)
+            v = db.lookup(canon, g.top_rel) or db.shapes[canon].variant(g.top_rel, db.pos_tol + 2)
             if v is not None and topology(canon, db.shapes[canon].bits) == topo:
-                ordered.append((d, canon, v, _decide(v, db)[0]))
+                ordered.append((d, canon, v, _decide(v, db)[0], px))
         if ordered:
-            d, canon, v, label = ordered[0]
+            d, canon, v, label, px = ordered[0]
             tol = PROTO_TOL if label and not is_strict(label) else PROTO_STRICT_TOL
-            if d <= tol:
+            if d <= tol or px <= PROTO_MIN_PX:
                 if label is None:
                     if confusable({k for k, n in v.votes.items() if n > 0} | ({"I", "l"} if db.il_identical else set())):
                         return canon, v, d              # the font's I/l cluster: the word decides
                     return None, None, d                # unconfirmed cluster: wait for the VLM
-                if _geo_disagree(fi, v.geo_italic) or _geo_disagree(fb, v.geo_bold):
+                # identical stable pixels outweigh a word-slant vote; otherwise slant/weight must agree
+                if px > 1 and (_geo_disagree(fi, v.geo_italic) or _geo_disagree(fb, v.geo_bold)):
                     return None, None, d
                 other = next((c for c in ordered if c[3] != label and not (c[3] in AMBIG_IL and label in AMBIG_IL)), None)
                 if other is not None and other[0] - d < PROTO_MARGIN:
@@ -244,7 +247,12 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
                 if (dh == 0 or db.il_identical) and diff_ratio(g.bits, db.shapes[key].bits) <= 0.35:
                     return key, v, r
                 return None, None, r
-            if not label or is_strict(label) or _geo_disagree(fi, v.geo_italic) or _geo_disagree(fb, v.geo_bold):
+            if not label or is_strict(label):
+                return None, None, r
+            # one pixel of tolerance hides the slant of x-height letters, not of capitals and
+            # ascenders (their shear is several pixels): the geometry gate is for small glyphs
+            tall = db.unit is not None and g.h >= 1.2 * db.unit
+            if not tall and (_geo_disagree(fi, v.geo_italic) or _geo_disagree(fb, v.geo_bold)):
                 return None, None, r
             other = next((c for c in ordered if c[3] != label), None)
             if other is not None and other[0] - r < TOLERANT_MARGIN:

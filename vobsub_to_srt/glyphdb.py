@@ -38,6 +38,7 @@ PROTO_MIN = 6             # samples before a cluster's prototype is used for mat
 PROTO_TOL = 0.04          # disagreements on stable pixels / stable ink accepted as the same letter
 PROTO_STRICT_TOL = 0.02   # ... for strict letters (I l 1 ! i j) and unlabelled clusters
 PROTO_MARGIN = 0.03       # lead over the nearest prototype with a different label
+PROTO_MIN_PX = 3          # ... or at most this many disagreeing stable pixels (small glyphs: i , ')
 PROTO_STABLE = 0.9        # a pixel is stable if ink in >= 90% or <= 10% of the samples
 MIN_MEMBER_SEEN = 2       # a jitter member seen once is not kept (rescaled tracks: thousands per file)
 MAX_MEMBERS = 24          # most frequent members kept per cluster; the rest is read via the near search
@@ -844,9 +845,10 @@ class GlyphDB:
         self._log("obs", canon, bits, weight)
         self.dirty = True
 
-    def proto_candidates(self, bits: np.ndarray, max_ratio: float = 0.2) -> list[tuple[float, str]]:
+    def proto_candidates(self, bits: np.ndarray, max_ratio: float = 0.2) -> list[tuple[float, str, int]]:
         """Clusters whose prototype the glyph fits: (disagreements on stable pixels / stable ink,
-        canonical key), nearest first. Only prototypes with >= PROTO_MIN samples take part."""
+        canonical key, disagreeing pixels), nearest first. Only prototypes with >= PROTO_MIN
+        samples take part."""
         if self._pstacks is None:
             groups: dict[tuple[int, int], list] = {}
             for k, p in self.protos.items():
@@ -869,7 +871,7 @@ class GlyphDB:
                     d = ((a[None] ^ M) & S).reshape(len(keys), -1).sum(axis=1)
                     best = d if best is None else np.minimum(best, d)
             ratios = best / ink
-            out += [(float(r), k) for r, k in zip(ratios, keys) if r <= max_ratio]
+            out += [(float(r), k, int(d)) for r, k, d in zip(ratios, keys, best) if r <= max_ratio]
         out.sort()
         return out
 

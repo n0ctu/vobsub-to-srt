@@ -156,6 +156,14 @@ class Lexicon:
         if n < 2 or n > MAX_CANDIDATES:
             return None
         cands = sorted({"".join(p) for p in itertools.product(*options)})
+        if self.use_case:
+            # "WAILING" vs "WAlLING": a reading with a lone lower-case l inside a capital word (or a
+            # capital I inside a lower-case one) is not how words are written, whatever the corpus
+            # says about the rest; one case-regular reading among irregular ones decides
+            regular = [c for c in cands if case_regular(_core(c))]
+            if len(regular) == 1 and len(cands) > 1:
+                self.stats["case"] += 1
+                return regular[0]
         known = False
         if self.zipf is not None:
             scored = sorted(((self.zipf(_core(c).lower()), c) for c in cands), reverse=True)
