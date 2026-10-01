@@ -174,7 +174,8 @@ function applyMode(mode) {
   const dark = mode === 'dark' || (mode === 'system' && osDark.matches);
   document.documentElement.classList.toggle('dark', dark);
   document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
-  document.querySelectorAll('#theme svg').forEach(el => { el.hidden = el.dataset.mode !== mode; });
+  // attribute, not property: SVG elements have no `hidden` property, only HTML elements do
+  document.querySelectorAll('#theme svg').forEach(el => el.toggleAttribute('hidden', el.dataset.mode !== mode));
   const next = MODES[(MODES.indexOf(mode) + 1) % MODES.length];
   $('#theme').title = `Theme: ${NAMES[mode]} (click for ${NAMES[next]})`;
   $('#theme').setAttribute('aria-label', `Theme: ${NAMES[mode]}. Switch to ${NAMES[next]}`);
@@ -318,7 +319,7 @@ function reset() {
   $('#idle').hidden = true; $('#progress').hidden = false; $('#logbox').open = false;
   $('#result').innerHTML = ''; $('#summary').innerHTML = ''; $('#log').textContent = ''; $('#ptitle').textContent = '';
   rows.clear(); $('#transcript').innerHTML = ''; $('#tbox').hidden = true;
-  glyphEls.clear(); $('#gnew').innerHTML = '<span class="empty text-zinc-500">none so far</span>'; $('#gknown').innerHTML = ''; $('#gpending').textContent = ''; $('#gbox').hidden = true; $('#gnote').hidden = true;
+  glyphEls.clear(); glyphRef = 0; $('#gnew').innerHTML = '<span class="empty text-zinc-500">none so far</span>'; $('#gknown').innerHTML = ''; $('#gpending').textContent = ''; $('#gbox').hidden = true; $('#gnote').hidden = true;
 }
 function select(id) {
   selectedId = id; renderQueue();
@@ -475,6 +476,22 @@ function drawGlyph(c) {
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (bits[y * w + x]) ctx.fillRect(x, y, 1, 1);
 }
 const glyphEls = new Map();
+// Glyph previews share one scale per job, so a dot stays a dot next to a capital letter: the
+// tallest glyph seen fills the 36 px box, everything else is scaled with it; a glyph wider than
+// the box is shrunk to fit. Boxes are square, glyphs sit bottom-centre. Scale is global per job.
+let glyphRef = 0;
+function sizeGlyphs(items) {
+  const ref = Math.max(glyphRef, ...items.map(g => g.h));
+  const all = ref > glyphRef;                 // a taller glyph arrived: everything rescales
+  glyphRef = ref;
+  const els = all ? [...glyphEls.values()] : items.map(g => glyphEls.get(g.key)).filter(Boolean);
+  for (const el of els) {
+    const c = el.querySelector('canvas'), w = +c.dataset.w, h = +c.dataset.h;
+    const s = Math.min(36 / glyphRef, 36 / w);
+    c.style.width = Math.max(1, Math.round(w * s)) + 'px';
+    c.style.height = Math.max(1, Math.round(h * s)) + 'px';
+  }
+}
 function glyphAdd(items, known, pending, flash = true) {
   $('#gbox').hidden = false;
   for (const g of items) {
@@ -485,16 +502,16 @@ function glyphAdd(items, known, pending, flash = true) {
       const empty = box.querySelector('.empty'); if (empty) empty.remove();
       box.appendChild(el);
     }
-    const scale = 32 / g.h;
     el.className = (flash ? 'flash ' : '') + 'flex items-center gap-1.5 rounded-md border border-zinc-200 px-1.5 py-1 dark:border-zinc-800';
     el.title = `${g.n}× in this file`;
-    el.innerHTML = `<canvas class="glyph text-zinc-800 dark:text-zinc-200" width="${g.w}" height="${g.h}" style="height:32px;width:${Math.round(g.w * scale)}px;image-rendering:pixelated" data-w="${g.w}" data-h="${g.h}"></canvas>
+    el.innerHTML = `<span class="flex h-10 w-10 shrink-0 items-end justify-center"><canvas class="glyph text-zinc-800 dark:text-zinc-200" width="${g.w}" height="${g.h}" style="image-rendering:pixelated" data-w="${g.w}" data-h="${g.h}"></canvas></span>
       <span class="${g.style.includes('i') ? 'italic' : ''} ${g.style.includes('b') ? 'font-bold' : ''}"></span>
       <span class="text-[10px] text-zinc-400">${g.n}</span>`;
     el.children[1].textContent = g.label;
     const c = el.querySelector('canvas'); c.dataset.bits = g.bits; drawGlyph(c);
     if (flash) setTimeout(() => el.classList.remove('flash'), 1500);
   }
+  sizeGlyphs(items);
   $('#gnew-n').textContent = $('#gnew').querySelectorAll('canvas').length + ' shapes';
   $('#gknown-n').textContent = $('#gknown').querySelectorAll('canvas').length + ' shapes';
   $('#gpending').textContent = pending ? `${pending} shapes in this file are not yet confirmed (unknown or seen only once).` : '';
