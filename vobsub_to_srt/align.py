@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -58,6 +58,7 @@ class Alignment:
     spaces_before: set[int]   # glyph indices that start a new word
     conflicts: int = 0        # mappings where the VLM contradicts an override-strong glyph label
     soft_conflicts: int = 0   # ... a VLM-confirmed label that is not (yet) override-strong
+    shifted: set = field(default_factory=set)   # mapping indices inside a shifted run (see _shift_run)
 
 
 def align_line(db: GlyphDB, line: Line, styled: list[tuple[str, bool]], gap_threshold: float) -> Alignment | None:
@@ -160,13 +161,9 @@ def align_line(db: GlyphDB, line: Line, styled: list[tuple[str, bool]], gap_thre
         n_conf = sum(1 for i in range(m) if strong[i] and strong[i] != chars[i])
         soft = sum(1 for i in range(m) if not strong[i] and trusted[i] and trusted[i] != chars[i]
                    and not il(trusted[i], chars[i]))
-        if cost == 0.0 and n_conf <= MAX_CONFLICT_SHARE * m:
+        if cost == 0.0 and n_conf == 0 and soft == 0:
             maps = [Mapping((i, i + 1), (i, i + 1), chars[i], sty[i], strong[i], alts[i]) for i in range(m)]
-            n_conf -= _il_pairs(maps)
-            fast = Alignment(maps, CONFLICT_COST * (n_conf + soft), {i for i in range(1, m) if i in word_start},
-                             n_conf, soft)
-            if not _shifted(fast):
-                return fast
+            return Alignment(maps, 0.0, {i for i in range(1, m) if i in word_start}, 0, 0)
 
     dp = np.full((m + 1, n + 1), INF)
     back: dict[tuple[int, int], tuple[int, int]] = {}
@@ -218,7 +215,7 @@ def align_line(db: GlyphDB, line: Line, styled: list[tuple[str, bool]], gap_thre
     n_conf = sum(1 for mp in maps if mp.db_label and mp.db_label != mp.text)
     soft = sum(1 for mp in maps if mp.segs[1] - mp.segs[0] == 1 and not mp.db_label
                and trusted[mp.segs[0]] and trusted[mp.segs[0]] != mp.text)
-    return Alignment(maps, float(dp[m, n]), starts, n_conf, soft)
+    return Alignment(maps, float(dp[m, n]), starts, n_conf, soft, _shift_run(maps))
 
 
 @dataclass
@@ -258,8 +255,6 @@ def align_cue(db: GlyphDB, lines: list[Line], vlm_text: str,
             return None, f"too many conflicts with confirmed glyphs ({a.conflicts})"
         if a.soft_conflicts >= 2:
             return None, f"misaligned: {a.soft_conflicts} confirmed glyphs contradicted"
-        if _shifted(a):
-            return None, "misaligned: shifted run of contradictions"   # never learn from a shifted reading
         single = sum(1 for mp in a.mappings if mp.segs[1] - mp.segs[0] == 1 and mp.db_label
                      and mp.db_label != mp.text)
         cost = a.cost - CONFLICT_COST * (single + a.soft_conflicts)   # VLM misreads, not alignment errors
@@ -286,7 +281,9 @@ def learn_cue(db: GlyphDB, lines: list[Line], vlm_text: str, gap_threshold: floa
     seen: set[tuple] = set()      # one vote per (glyph, label) per cue: votes must be independent
     for line, a in zip(lines, aligns):
         gl = line.glyphs
-        for mp in a.mappings:
+        for k, mp in enumerate(a.mappings):
+            if k in a.shifted:
+                continue          # the VLM text and the glyphs do not line up here: no evidence
             s0, s1 = mp.segs
             if s1 - s0 == 1:
                 g = gl[s0]
@@ -303,7 +300,9 @@ def learn_cue(db: GlyphDB, lines: list[Line], vlm_text: str, gap_threshold: floa
                     seen.add((tuple(keys), mp.text))
                     db.add_sequence(gl[s0:s1], mp.text)
         # gaps between mappings
-        for mp_a, mp_b in zip(a.mappings, a.mappings[1:]):
+        for k, (mp_a, mp_b) in enumerate(zip(a.mappings, a.mappings[1:])):
+            if k in a.shifted or k + 1 in a.shifted:
+                continue
             ga, gb = gl[mp_a.segs[1] - 1], gl[mp_b.segs[0]]
             db.add_gap(ga.key, gb.key, gb.x - ga.right, mp_b.segs[0] in a.spaces_before,
                        "i" in mp_a.style or "i" in mp_b.style)
@@ -357,21 +356,30 @@ def restyle(lines: list[Line], aligns: list[Alignment], style_of, lexicon=None) 
     return "\n".join(out), corrections
 
 
-def _shifted(a: Alignment) -> int:
-    """Number of contradictions when the alignment is off by one glyph: a run of neighbouring
-    mappings where the memory reads glyph k as the character the VLM put on glyph k+1 (or k-1).
-    Such a run means the VLM text and the glyphs do not line up (a character drawn as two glyphs,
-    read as one), not that the VLM misread six letters in a row. Overriding would garble the word."""
-    maps = a.mappings
+def _shift_run(maps: list[Mapping]) -> set[int]:
+    """Mapping indices where the alignment is off by one glyph: runs of neighbouring contradictions
+    in which the memory reads glyph k as the character the VLM put on glyph k+1 (or k-1). Such a
+    run means the VLM text and the glyphs do not line up there (a dropped letter, a character drawn
+    as two glyphs read as one), not that the VLM misread several letters in a row. The rest of the
+    line is still evidence; the run itself is not, and overriding inside it would garble the word."""
     conflicts = [mp.db_label is not None and mp.db_label != mp.text for mp in maps]
-    if sum(conflicts) < 3:
-        return 0
+    out: set[int] = set()
+    run: list[int] = []
     pairs = 0
-    for k in range(len(maps) - 1):
-        if conflicts[k] and conflicts[k + 1] and (maps[k].db_label == maps[k + 1].text
-                                                   or maps[k].text == maps[k + 1].db_label):
-            pairs += 1
-    return sum(conflicts) if pairs >= 2 else 0
+    for k in range(len(maps) + 1):
+        if k < len(maps) and conflicts[k]:
+            if run and (maps[run[-1]].db_label == maps[k].text or maps[run[-1]].text == maps[k].db_label):
+                pairs += 1
+            run.append(k)
+            continue
+        if len(run) >= 3 and pairs >= 2:
+            out.update(run)
+        run, pairs = [], 0
+    return out
+
+
+def _shifted(a: Alignment) -> int:
+    return len(a.shifted)
 
 
 def _lexicon_word(word: list, lexicon, corrections: list[str]) -> None:
