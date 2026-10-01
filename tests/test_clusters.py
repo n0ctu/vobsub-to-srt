@@ -127,3 +127,48 @@ def test_tolerant_stage_respects_slant_and_is_off_for_crisp_tracks():
     v.geo_italic = [0, 5]                                      # the cluster is italic ...
     db.file_geo = ({jit.key: [4, 0]}, {})                      # ... this glyph's words are upright
     assert near_match(db, jit)[1] is None
+
+
+def _jittered(bits, k):
+    """Shift the k-th edge column/row of a bitmap by one pixel (raster jitter)."""
+    import numpy as np
+    j = bits.copy()
+    if k % 2:
+        j[:, k % j.shape[1]] |= np.roll(bits, 1, axis=0)[:, k % j.shape[1]]
+    else:
+        j[k % j.shape[0], :] |= np.roll(bits, 1, axis=1)[k % j.shape[0], :]
+    return j
+
+
+def test_prototype_median_mask_and_matching(tmp_path):
+    """Samples of a letter accumulate into a median that equals the clean glyph and a mask that
+    frees the flickering edge pixels; a new jitter variant matches the prototype, a different
+    letter does not; the prototype survives save/load and the private corpus keeps the counts."""
+    import numpy as np
+    from vobsub_to_srt.glyphdb import GlyphDB, PROTO_MIN, topology
+    from vobsub_to_srt.recognize import near_match
+    db = GlyphDB("t", tmp_path / "t.json")
+    db.attach_private(tmp_path / "wm", False)
+    ge = segment(render("e", size=22))[0].glyphs[0]
+    gc = segment(render("c", size=22))[0].glyphs[0]
+    for g, lab in ((ge, "e"), (gc, "c")):
+        db.add_vote(g.key, g.bits, g.top_rel, lab, "", once=set())
+        db.add_vote(g.key + "2", g.bits, g.top_rel, lab, "", once=set())
+    for k in range(PROTO_MIN + 2):
+        db.observe(ge.key, _jittered(ge.bits, k))
+    p = db.protos[ge.key]
+    assert p.n == PROTO_MIN + 2
+    assert np.array_equal(p.median[1:-1, 1:-1], ge.bits)             # jitter cancels in the median
+    assert (~p.stable).sum() > 0 and p.stable[1:-1, 1:-1][ge.bits].mean() > 0.5
+    new = _jittered(ge.bits, PROTO_MIN + 5)
+    jit = type(ge)(ge.x, ge.y, new, ge.top_rel, glyph_key(new))
+    cands = db.proto_candidates(new)
+    assert cands and cands[0][1] == ge.key and cands[0][0] <= 0.04
+    assert not any(k == ge.key and d <= 0.04 for d, k in db.proto_candidates(gc.bits))
+    key, v, d = near_match(db, jit)
+    assert key == ge.key and trusted_label(v.votes)[0] == "e"
+    db.save(final=True)
+    db2 = GlyphDB.load(tmp_path / "t.json")
+    assert db2.protos[ge.key].n == PROTO_MIN + 2 and db2.protos[ge.key].acc is None     # public: median + mask
+    db2.attach_private(tmp_path / "wm", False)
+    assert db2.protos[ge.key].acc is not None and db2.proto_candidates(new)[0][1] == ge.key

@@ -34,6 +34,11 @@ STRICT_TOL = 0.05       # for strict glyphs: an i differs from an l by its dot g
 CLUSTER_MARGIN = 0.06     # lead over the nearest shape with a different label
 TOLERANT_TOL = 0.05       # edge-tolerant difference accepted as "the same glyph, jittered" (recognize.near_match stage 2)
 TOLERANT_MARGIN = 0.03    # ... unless another label's shape is nearly as close
+PROTO_MIN = 6             # samples before a cluster's prototype is used for matching
+PROTO_TOL = 0.04          # disagreements on stable pixels / stable ink accepted as the same letter
+PROTO_STRICT_TOL = 0.02   # ... for strict letters (I l 1 ! i j) and unlabelled clusters
+PROTO_MARGIN = 0.03       # lead over the nearest prototype with a different label
+PROTO_STABLE = 0.9        # a pixel is stable if ink in >= 90% or <= 10% of the samples
 MIN_MEMBER_SEEN = 2       # a jitter member seen once is not kept (rescaled tracks: thousands per file)
 MAX_MEMBERS = 24          # most frequent members kept per cluster; the rest is read via the near search
 STRICT = set("Il|i1!jíìïî")   # punctuation is told apart by size and baseline position instead
@@ -151,6 +156,19 @@ def topology(key: str, bits: np.ndarray) -> tuple[int, int]:
     return hit
 
 
+def _unpack(b64: str, h: int, w: int) -> np.ndarray:
+    return np.unpackbits(np.frombuffer(base64.b64decode(b64), np.uint8))[:h * w].reshape(h, w).astype(bool)
+
+
+def _proto_json(p: "Proto | None") -> dict | None:
+    if p is None or p.n <= 0:
+        return None
+    m, st = p.median, p.stable
+    return {"n": p.n, "h": int(m.shape[0]), "w": int(m.shape[1]),
+            "median": base64.b64encode(np.packbits(m).tobytes()).decode(),
+            "stable": base64.b64encode(np.packbits(st).tobytes()).decode()}
+
+
 def _dilate(stack: np.ndarray) -> np.ndarray:
     """3x3 dilation of a stack of bitmaps (n, h, w), with a one-pixel border added."""
     n, h, w = stack.shape
@@ -159,6 +177,29 @@ def _dilate(stack: np.ndarray) -> np.ndarray:
         for dx in (0, 1, 2):
             out[:, dy:dy + h, dx:dx + w] |= stack
     return out
+
+
+class Proto:
+    """A cluster's prototype: every sample of the letter accumulated on one canvas (the canonical
+    shape plus a one-pixel border, samples aligned by best shift). The median bitmap is the letter
+    as the font draws it; pixels that are ink in nearly all or nearly no samples are stable, the
+    rest flicker with the raster. Matching counts disagreements on stable pixels only, so a
+    jittered variant scores ~0 while a different letter differs where it matters (a bar, a gap,
+    an extra row). The counts (acc) are private training data; median + mask are publishable."""
+    __slots__ = ("acc", "n", "_median", "_stable")
+
+    def __init__(self, acc=None, n: int = 0, median=None, stable=None):
+        self.acc, self.n, self._median, self._stable = acc, n, median, stable
+
+    @property
+    def median(self) -> np.ndarray:
+        return self.acc * 2 > self.n if self.acc is not None else self._median
+
+    @property
+    def stable(self) -> np.ndarray:
+        if self.acc is not None:
+            return (self.acc >= PROTO_STABLE * self.n) | (self.acc <= (1 - PROTO_STABLE) * self.n)
+        return self._stable
 
 
 class _Part:
@@ -229,6 +270,8 @@ class GlyphDB:
         # jitter it is made for; a crisp track's exact bitmaps never need it (pipeline sets it)
         self.tolerant = False
         self._il_cache: tuple[int, bool] = (-1, False)
+        self.protos: dict[str, Proto] = {}       # canonical key -> prototype (see Proto)
+        self._pstacks: dict | None = None        # canvas size -> (keys, medians, masks), rebuilt lazily
         self._counts_credited: set[str] = set()
         self.saved_this_run = False           # a final save (with pruning) follows any mid-run save
 
@@ -532,6 +575,23 @@ class GlyphDB:
         for a, b, g, c in spaces:
             res += [g - (R.get(a, r_def) + L.get(b, l_def))] * c
         space_off = float(np.median(res))
+        # Letters that rarely follow (or precede) another letter inside a word have no bearing from
+        # the letter pairs: in English a 'j' almost always starts a word. Its hook reaches left
+        # under the previous letter, so the default bearing is off by pixels and every "is just"
+        # lands in the uncertain band. With the space offset known, space pairs give the bearing.
+        missing_l: dict[str, list[float]] = defaultdict(list)
+        missing_r: dict[str, list[float]] = defaultdict(list)
+        for a, b, g, c in spaces:
+            if b not in L and a in R:
+                missing_l[b] += [g - R[a] - space_off] * c
+            if a not in R and b in L:
+                missing_r[a] += [g - L[b] - space_off] * c
+        for b, vals in missing_l.items():
+            if len(vals) >= 2:
+                L[b] = float(np.median(vals))
+        for a, vals in missing_r.items():
+            if len(vals) >= 2:
+                R[a] = float(np.median(vals))
         self._bearings = (dict(R), dict(L), r_def, l_def, space_off)
         return self._bearings
 
@@ -610,6 +670,7 @@ class GlyphDB:
                 "derived_from": s.derived_from,
                 "cluster": s.cluster if s.cluster != s.key else None,
                 "n": s.n,
+                "proto": _proto_json(self.protos.get(s.key)) if s.key in self.protos else None,
                 "variants": [{"top_rel": v.top_rel, "votes": dict(v.votes), "styles": v.styles,
                               "geo_italic": v.geo_italic, "geo_bold": v.geo_bold, "prior": v.prior}
                              for v in s.variants],
@@ -638,6 +699,10 @@ class GlyphDB:
                                               v.get("prior")))
             db.shapes[shape.key] = shape
             db.by_size[bits.shape].append(shape.key)
+            pj = s.get("proto")
+            if pj:
+                db.protos[shape.key] = Proto(n=int(pj["n"]), median=_unpack(pj["median"], pj["h"], pj["w"]),
+                                             stable=_unpack(pj["stable"], pj["h"], pj["w"]))
         for shape in db.shapes.values():          # a member whose canonical is gone stands alone
             if shape.cluster not in db.shapes:
                 shape.cluster = shape.key
@@ -661,6 +726,11 @@ class GlyphDB:
             self.learned_sources |= set(d.get("learned_sources", []))
             for k, v in d.get("words", {}).items():
                 self.words.setdefault(k, Counter()).update(v)
+            for k, pj in d.get("protos", {}).items():        # the training corpus: per-pixel counts
+                if k in self.shapes:
+                    acc = np.frombuffer(base64.b64decode(pj["acc"]), np.uint16).astype(np.int32).reshape(pj["h"], pj["w"])
+                    self.protos[k] = Proto(acc=acc.copy(), n=int(pj["n"]))
+            self._pstacks = None
         if not word_memory:
             self.words = {}
 
@@ -693,6 +763,8 @@ class GlyphDB:
                     self.join(*op[1:])
                 elif kind == "word":
                     self.add_word(*op[1:])
+                elif kind == "obs":
+                    self.observe(*op[1:])
         finally:
             self.journal = saved
 
@@ -738,6 +810,68 @@ class GlyphDB:
                           for hi, wi in sizes["I"] for hl, wl in sizes["l"])
             self._il_cache = (n, hit)
         return self._il_cache[1]
+
+    # ---------- prototypes ----------
+    def observe(self, canon: str, bits: np.ndarray, weight: int = 1) -> None:
+        """Add `weight` samples of a glyph to its cluster's prototype (the training step)."""
+        sh = self.shapes.get(canon)
+        if sh is None or weight <= 0:
+            return
+        H, W = sh.bits.shape[0] + 2, sh.bits.shape[1] + 2
+        p = self.protos.get(canon)
+        if p is None or p.acc is None or p.acc.shape != (H, W):
+            acc = np.zeros((H, W), np.int32)
+            n = 0
+            if p is not None and p._median is not None and p._median.shape == (H, W):
+                acc += p._median.astype(np.int32) * p.n     # public median only: seed the counts
+                n = p.n
+            p = self.protos[canon] = Proto(acc=acc, n=n)
+        h, w = bits.shape
+        if h > H or w > W:
+            return
+        target = p.median if p.n else np.pad(sh.bits, 1)
+        best, best_a = None, None
+        for dy in range(H - h + 1):
+            for dx in range(W - w + 1):
+                a = np.zeros((H, W), bool)
+                a[dy:dy + h, dx:dx + w] = bits
+                d = int((a ^ target).sum())
+                if best is None or d < best:
+                    best, best_a = d, a
+        p.acc += best_a.astype(np.int32) * weight
+        p.n += weight
+        self._pstacks = None
+        self._log("obs", canon, bits, weight)
+        self.dirty = True
+
+    def proto_candidates(self, bits: np.ndarray, max_ratio: float = 0.2) -> list[tuple[float, str]]:
+        """Clusters whose prototype the glyph fits: (disagreements on stable pixels / stable ink,
+        canonical key), nearest first. Only prototypes with >= PROTO_MIN samples take part."""
+        if self._pstacks is None:
+            groups: dict[tuple[int, int], list] = {}
+            for k, p in self.protos.items():
+                if p.n >= PROTO_MIN and k in self.shapes:
+                    groups.setdefault(p.median.shape, []).append(k)
+            self._pstacks = {size: (keys, np.stack([self.protos[k].median for k in keys]),
+                                    np.stack([self.protos[k].stable for k in keys]))
+                             for size, keys in groups.items()}
+        h, w = bits.shape
+        out: list[tuple[float, str]] = []
+        for (H, W), (keys, M, S) in self._pstacks.items():
+            if not (h <= H <= h + 3 and w <= W <= w + 3):     # canvas = shape + 2, sample within +-1
+                continue
+            ink = np.maximum(1, (M & S).reshape(len(keys), -1).sum(axis=1))
+            best = None
+            for dy in range(H - h + 1):
+                for dx in range(W - w + 1):
+                    a = np.zeros((H, W), bool)
+                    a[dy:dy + h, dx:dx + w] = bits
+                    d = ((a[None] ^ M) & S).reshape(len(keys), -1).sum(axis=1)
+                    best = d if best is None else np.minimum(best, d)
+            ratios = best / ink
+            out += [(float(r), k) for r, k in zip(ratios, keys) if r <= max_ratio]
+        out.sort()
+        return out
 
     def credit_counts(self, counts: dict[str, int], credited: set[str]) -> None:
         """Add one file's glyph occurrences to Shape.n, each key once per run (a shape starts at 1)."""
@@ -823,7 +957,10 @@ class GlyphDB:
         self.path = path
         if self.private_path is not None:
             self.private_path.parent.mkdir(parents=True, exist_ok=True)
-            priv = {"db": self.name, "learned_sources": sorted(self.learned_sources)}
+            priv = {"db": self.name, "learned_sources": sorted(self.learned_sources),
+                    "protos": {k: {"h": p.acc.shape[0], "w": p.acc.shape[1], "n": p.n,
+                                   "acc": base64.b64encode(np.minimum(p.acc, 65535).astype(np.uint16).tobytes()).decode()}
+                               for k, p in self.protos.items() if p.acc is not None and k in self.shapes}}
             if self.word_memory:
                 priv["words"] = {k: dict(v) for k, v in self.words.items()}
             tmp = self.private_path.with_suffix(".tmp")

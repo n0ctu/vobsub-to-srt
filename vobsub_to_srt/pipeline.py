@@ -638,6 +638,11 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
 
     flush_cues()
     flush_glyphs()
+    # Training step: every glyph of this file whose cluster is known feeds the cluster's prototype
+    # (median + stability mask), so the next file reads its jittered variants from memory.
+    for key, g in sample_glyph.items():
+        if key in db.shapes:
+            db.observe(db.canonical(key), g.bits, keyfreq[key])
     if db.dirty or db.saved_this_run:
         db.save(final=True)          # the run's last save prunes jitter members
 

@@ -9,7 +9,8 @@ from collections import Counter
 
 import re as _re
 
-from .glyphdb import CLUSTER_TOL, OVERRIDE_SHARE, OVERRIDE_VOTES, TOLERANT_MARGIN, GlyphDB, Variant, diff_ratio, is_strict, tol_for, topology, trusted_label
+from .glyphdb import (CLUSTER_TOL, OVERRIDE_SHARE, OVERRIDE_VOTES, PROTO_MARGIN, PROTO_STRICT_TOL, PROTO_TOL, TOLERANT_MARGIN,
+                      GlyphDB, Variant, diff_ratio, is_strict, tol_for, topology, trusted_label)
 from .styling import inherit_punct_styles, majority_style, render_styled
 from .segment import Glyph, Line
 
@@ -188,6 +189,33 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
             continue
         if r <= tol_for(label):
             cands.append((r, key, v, label))
+    if not cands and db.protos:
+        # stage 1b: the cluster prototypes (median + stability mask, learned from every sample of
+        # the letter in earlier files). Disagreements count on stable pixels only, so a jittered
+        # variant scores ~0 and a different letter differs where the font is stable. Same decision
+        # rules as stage 2 below; strict letters are allowed, the mask sees their one-pixel rows.
+        topo = topology(g.key, g.bits)
+        fi = db.file_geo[0].get(g.key)
+        fb = db.file_geo[1].get(g.key)
+        ordered = []
+        for d, canon in db.proto_candidates(g.bits):
+            v = db.lookup(canon, g.top_rel)
+            if v is not None and topology(canon, db.shapes[canon].bits) == topo:
+                ordered.append((d, canon, v, _decide(v, db)[0]))
+        if ordered:
+            d, canon, v, label = ordered[0]
+            tol = PROTO_TOL if label and not is_strict(label) else PROTO_STRICT_TOL
+            if d <= tol:
+                if label is None:
+                    if confusable({k for k, n in v.votes.items() if n > 0} | ({"I", "l"} if db.il_identical else set())):
+                        return canon, v, d              # the font's I/l cluster: the word decides
+                    return None, None, d                # unconfirmed cluster: wait for the VLM
+                if _geo_disagree(fi, v.geo_italic) or _geo_disagree(fb, v.geo_bold):
+                    return None, None, d
+                other = next((c for c in ordered if c[3] != label and not (c[3] in AMBIG_IL and label in AMBIG_IL)), None)
+                if other is not None and other[0] - d < PROTO_MARGIN:
+                    return None, None, d
+                return canon, v, d
     if not cands and db.tolerant and g.h >= TOLERANT_MIN_H and int(g.bits.sum()) >= TOLERANT_MIN_INK:
         # stage 2 (rescaled tracks only): the edge-tolerant difference. Jitter moves edge pixels
         # by one; the pixel difference of a small letter then exceeds the tolerance although the
