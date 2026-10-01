@@ -478,7 +478,7 @@ function drawGlyph(c) {
 const glyphEls = new Map();
 // Glyph previews share one scale per job, so a dot stays a dot next to a capital letter: the
 // tallest glyph seen fills the 36 px box, everything else is scaled with it; a glyph wider than
-// the box is shrunk to fit. Boxes are square, glyphs sit bottom-centre. Scale is global per job.
+// the box is shrunk to fit. Boxes are square, glyphs are centred (a dash at the bottom reads as an underline). Scale is global per job.
 let glyphRef = 0;
 function sizeGlyphs(items) {
   const ref = Math.max(glyphRef, ...items.map(g => g.h));
@@ -504,7 +504,7 @@ function glyphAdd(items, known, pending, flash = true) {
     }
     el.className = (flash ? 'flash ' : '') + 'flex items-center gap-1.5 rounded-md border border-zinc-200 px-1.5 py-1 dark:border-zinc-800';
     el.title = `${g.n}× in this file`;
-    el.innerHTML = `<span class="flex h-10 w-10 shrink-0 items-end justify-center"><canvas class="glyph text-zinc-800 dark:text-zinc-200" width="${g.w}" height="${g.h}" style="image-rendering:pixelated" data-w="${g.w}" data-h="${g.h}"></canvas></span>
+    el.innerHTML = `<span class="flex h-10 w-10 shrink-0 items-center justify-center"><canvas class="glyph text-zinc-800 dark:text-zinc-200" width="${g.w}" height="${g.h}" style="image-rendering:pixelated" data-w="${g.w}" data-h="${g.h}"></canvas></span>
       <span class="${g.style.includes('i') ? 'italic' : ''} ${g.style.includes('b') ? 'font-bold' : ''}"></span>
       <span class="text-[10px] text-zinc-400">${g.n}</span>`;
     el.children[1].textContent = g.label;
