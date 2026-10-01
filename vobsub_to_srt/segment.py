@@ -20,7 +20,15 @@ MIN_SHARE = 0.1       # colours smaller than this fraction of the largest text c
 
 
 def fill_mask(cue: Cue) -> np.ndarray:
-    """The text pixels of a cue, as a mask cropped to the ink.
+    """The text pixels of a cue (the fill palette values, see fill_values), cropped to the ink."""
+    keep = fill_values(cue)
+    if not keep:
+        return np.zeros((0, 0), bool)
+    return crop(np.isin(cue.image, keep))
+
+
+def fill_values(cue: Cue) -> list[int]:
+    """The palette values that are text fill.
 
     A VobSub cue has up to four palette colours: background, fill, and usually an outline and an
     anti-alias ring between them. Only the fill is text. The outline is the colour that faces
@@ -30,7 +38,7 @@ def fill_mask(cue: Cue) -> np.ndarray:
     excluded by their density."""
     img = cue.image
     if img.size == 0:
-        return np.zeros((0, 0), bool)
+        return []
     h, w = img.shape
     padded = np.pad(img, 1, constant_values=4)                  # 4 = image border
     opaque = [u for u in range(4) if cue.alpha[u] >= 8]
@@ -50,7 +58,7 @@ def fill_mask(cue: Cue) -> np.ndarray:
         bbox = (rows[-1] - rows[0] + 1) * (cols[-1] - cols[0] + 1)
         stats[v] = {"n": n, "hist": hist, "density": n / bbox}
     if not stats:
-        return np.zeros((0, 0), bool)
+        return []
     cand = {v: st for v, st in stats.items() if st["density"] < MAX_DENSITY} or stats
     backdrop = [v for v in stats if v not in cand]       # a box behind the text acts as background
     for st in cand.values():
@@ -71,7 +79,7 @@ def fill_mask(cue: Cue) -> np.ndarray:
                 fills = low
         largest = max(inner[v]["n"] for v in fills)
         keep = [v for v in fills if inner[v]["n"] >= MIN_SHARE * largest]
-    return crop(np.isin(img, keep))
+    return list(keep)
 
 
 def crop(mask: np.ndarray) -> np.ndarray:

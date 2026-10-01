@@ -26,6 +26,7 @@ def main() -> None:
     ap.add_argument("--concurrency", type=int, default=2)
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--sheet", type=int, default=1, help="cues per VLM request, stacked into one image (1 = off)")
+    ap.add_argument("--render", default="mask2", choices=["mask2", "mask1", "mask2s", "orig1", "orig2"], help="image sent to the VLM (testing)")
     ap.add_argument("--track", type=int, default=0)
     ap.add_argument("--context", type=int, default=12, help="previous cues given to the VLM as reference (0 = off)")
     ap.add_argument("--max-vlm-cues", type=int, default=None,
@@ -55,6 +56,7 @@ def main() -> None:
     opts = Options(db_dir=a.glyph_memory_dir, out_dir=a.out_dir, debug_dir=debug_dir, diagnostics=a.diagnostics or bool(a.cache_dir),
                    batch_size=a.batch_size,
                    sheet=a.sheet,
+                   render=a.render,
                    mode=a.mode, track=a.track, context=a.context, max_vlm_cues=a.max_vlm_cues,
                    rescale=a.debug_rescale, lexicon=a.lexicon,
                    keep_special_chars=a.keep_special_chars,

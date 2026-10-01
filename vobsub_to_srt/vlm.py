@@ -56,6 +56,55 @@ def mask_to_png(mask: np.ndarray, scale: int = 2, pad: int = 8) -> bytes:
     return buf.getvalue()
 
 
+def mask_to_png_smooth(mask: np.ndarray, scale: int = 2, pad: int = 8) -> bytes:
+    """Like mask_to_png, but upscaled with Lanczos (anti-aliased edges instead of blocks)."""
+    img = np.full((mask.shape[0] + 2 * pad, mask.shape[1] + 2 * pad), 255, np.uint8)
+    img[pad:pad + mask.shape[0], pad:pad + mask.shape[1]][mask] = 0
+    im = Image.fromarray(img).resize((img.shape[1] * scale, img.shape[0] * scale), Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, "PNG", optimize=True)
+    return buf.getvalue()
+
+
+def original_png(cue, fill: list[int], scale: int = 1, pad: int = 8, margin: int = 2) -> bytes:
+    """The cue as drawn (fill, anti-alias ring, outline), as grey on white: the fill colour becomes
+    black, the colour farthest from it in luminance (the outline) white, the ring in between;
+    transparent pixels are white. Cropped to the fill's bounding box plus a margin."""
+    lum = np.array([0.299 * r + 0.587 * g + 0.114 * b for r, g, b in cue.colors])
+    opaque = np.array([a > 0 for a in cue.alpha])
+    lf = lum[fill].mean()
+    far = max((abs(lum[v] - lf) for v in range(4) if opaque[v]), default=1.0) or 1.0
+    grey = np.array([255 if not opaque[v] else int(round(255 * min(1.0, abs(lum[v] - lf) / far)))
+                     for v in range(4)], np.uint8)
+    ink = np.isin(cue.image, fill)
+    rows, cols = np.nonzero(ink.any(axis=1))[0], np.nonzero(ink.any(axis=0))[0]
+    h, w = cue.image.shape
+    y0, y1 = max(0, rows[0] - margin), min(h, rows[-1] + 1 + margin)
+    x0, x1 = max(0, cols[0] - margin), min(w, cols[-1] + 1 + margin)
+    img = grey[cue.image[y0:y1, x0:x1]]
+    img = np.pad(img, pad, constant_values=255)
+    im = Image.fromarray(img)
+    if scale != 1:
+        im = im.resize((im.width * scale, im.height * scale), Image.LANCZOS)
+    buf = io.BytesIO()
+    im.save(buf, "PNG", optimize=True)
+    return buf.getvalue()
+
+
+RENDERS = ("mask2", "mask1", "mask2s", "orig1", "orig2")
+
+
+def render_cue_png(cue, mask: np.ndarray, fill: list[int], render: str) -> bytes:
+    """The image a VLM gets for a cue: see RENDERS (mask = fill bitmask, nearest 2x by default)."""
+    if render == "mask1":
+        return mask_to_png(mask, scale=1)
+    if render == "mask2s":
+        return mask_to_png_smooth(mask, scale=2)
+    if render in ("orig1", "orig2"):
+        return original_png(cue, fill, scale=1 if render == "orig1" else 2)
+    return mask_to_png(mask, scale=2)
+
+
 def sheet_png(masks: list[np.ndarray], scale: int = 2, pad: int = 8, bar: int = 4) -> bytes:
     """Several cue masks stacked top to bottom (dark text on white), separated by thick black bars."""
     width = max(m.shape[1] for m in masks) + 2 * pad

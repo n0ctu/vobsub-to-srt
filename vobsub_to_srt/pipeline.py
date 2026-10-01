@@ -22,9 +22,9 @@ from .lexicon import make_lexicon
 from .names import random_db_name
 from .simplify import CHARSET_LITERAL, CHARSET_SIMPLIFIED, simplify
 from .recognize import CueResult, near_match, recognize, _decide
-from .segment import Line, bold_votes, fill_mask, italic_votes, segment
+from .segment import Line, bold_votes, fill_mask, italic_votes, segment, fill_values
 from .srt import fmt_ts, normalize_text, render_srt
-from .vlm import VLMClient, mask_to_png, sheet_png, split_sheet
+from .vlm import VLMClient, mask_to_png, render_cue_png, sheet_png, split_sheet
 from .vobsub import Cue, load_vobsub, load_vobsub_bytes
 
 log = logging.getLogger("vobsub_to_srt")
@@ -52,6 +52,7 @@ class Options:
     diagnostics: bool = False            # keep raw VLM answers in the report
     batch_size: int = 16
     sheet: int = 1                       # cues per VLM request, stacked into one image (1 = off)
+    render: str = "mask2"                # image sent to the VLM (vlm.RENDERS); strict re-asks use the 3x mask
     mode: str = "hybrid"                 # hybrid | vlm-only | nocr-only
     train_until: float = 0.01            # stop "training" when unknown glyph occurrences < this share
     min_probe_coverage: float = 0.5
@@ -337,7 +338,8 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
             client.cache_hits += 1
             vlm_raw[st.cue.index] = acc
             return relined(st, acc)
-        png = mask_to_png(st.mask, scale=3 if strict else 2)
+        png = mask_to_png(st.mask, scale=3) if strict else \
+            render_cue_png(st.cue, st.mask, fill_values(st.cue), opts.render)
         text, cached = await client.transcribe_ex(png, max(1, len(st.lines)), lang, strict=strict,
                                                   context=history(st) if opts.context else None)
         if not cached:
