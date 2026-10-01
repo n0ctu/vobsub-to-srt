@@ -397,7 +397,7 @@ class GlyphDB:
     def classify_gap(self, ka: str, kb: str, gap: int, italic: bool) -> bool | None:
         """True = space, False = no space, None = uncertain."""
         pl, ps = self.pair_gaps.get(f"{self.canonical(ka)}|{self.canonical(kb)}|{gap}", (0, 0))
-        if pl or ps:
+        if pl + ps >= 2:          # a single observation may stem from a misaligned cue
             if pl and not ps:
                 return False
             if ps and not pl:

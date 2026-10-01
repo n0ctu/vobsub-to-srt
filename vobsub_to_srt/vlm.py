@@ -73,6 +73,21 @@ def _extract(message: dict) -> str:
     return _clean(message.get("content") or "")
 
 
+OCR_USER = "OCR:"
+
+
+def _ocr_fixups(text: str, n_lines: int) -> str:
+    """Document OCR models sometimes answer with the whole block repeated, or with markdown.
+    Collapse an answer that is the expected number of lines repeated k times."""
+    lines = [l.rstrip() for l in text.strip().split("\n") if l.strip()]
+    lines = [l for l in lines if l not in ("```", "```text")]
+    if n_lines and len(lines) > n_lines and len(lines) % n_lines == 0:
+        block = lines[:n_lines]
+        if all(lines[i:i + n_lines] == block for i in range(0, len(lines), n_lines)):
+            lines = block
+    return "\n".join(lines)
+
+
 class AdaptiveLimiter:
     """Concurrency limiter whose limit shrinks on HTTP 429 and slowly grows back on success."""
 
@@ -107,7 +122,8 @@ class AdaptiveLimiter:
 class VLMClient:
     def __init__(self, cache_dir: Path | None = None, concurrency: int = 2,
                  base_url: str | None = None, api_key: str | None = None, model: str | None = None,
-                 timeout: float = 60.0, max_attempts: int = 4, use_tool: bool = False):
+                 timeout: float = 60.0, max_attempts: int = 4, use_tool: bool = False,
+                 profile: str | None = None):
         load_env()
         missing = [k for k in ENV_KEYS if not env(k)]
         if missing and not (base_url and api_key and model):
@@ -117,6 +133,11 @@ class VLMClient:
         self.api_key = api_key or env("VLM_API_KEY")
         self.model = model or env("VLM_MODEL")
         self.use_tool = use_tool
+        # Prompt profile. "chat": the instruction prompt tuned for chat VLMs (DeepSeek & co).
+        # "ocr": the bare "OCR:" task prompt of document OCR models (PaddleOCR-VL), which choke on
+        # instructions, context and line counts. Chosen by VLM_PROMPT, else by the model name.
+        self.profile = profile or env("VLM_PROMPT") or ("ocr" if any(
+            w in (self.model or "").lower() for w in ("ocr", "paddle")) else "chat")
         # answer cache: in memory for this client's lifetime (default: nothing of the subtitle text
         # touches a disk), or on disk under cache_dir (CLI --diagnostics: re-runs are free and
         # reproducible across processes)
@@ -173,32 +194,37 @@ class VLMClient:
     async def transcribe_ex(self, png: bytes, n_lines: int, lang: str = "en", strict: bool = False,
                             context: list[str] | None = None) -> tuple[str, bool]:
         """Like transcribe(); also returns whether the answer came from the cache (no API request)."""
-        user = TRANSCRIBE_USER.format(lang=LANG_NAMES.get(lang, lang), n=n_lines)
-        if strict:
-            user += TRANSCRIBE_STRICT_ADDENDUM
-        if self.use_tool:
-            user += TRANSCRIBE_TOOL_ADDENDUM
-        mode = "\0tool" if self.use_tool else ""
+        if self.profile == "ocr":
+            user, context, system = OCR_USER, None, ""
+        else:
+            system = TRANSCRIBE_SYSTEM
+            user = TRANSCRIBE_USER.format(lang=LANG_NAMES.get(lang, lang), n=n_lines)
+            if strict:
+                user += TRANSCRIBE_STRICT_ADDENDUM
+            if self.use_tool:
+                user += TRANSCRIBE_TOOL_ADDENDUM
+        mode = ("\0tool" if self.use_tool else "") + "\0" + self.profile
         # image-level key (without the context history): a re-run whose context differs reuses the
         # earlier answer for the same image instead of asking again -> deterministic, no API call
-        image_key = "img-" + self._key(png, TRANSCRIBE_SYSTEM + chr(0) + user + mode)
+        image_key = "img-" + self._key(png, system + chr(0) + user + mode)
         if context:
             user += TRANSCRIBE_CONTEXT.format(k=len(context), history="\n".join(context))
-        key = self._key(png, TRANSCRIBE_SYSTEM + "\0" + user + mode)
+        key = self._key(png, system + "\0" + user + mode)
         cached = self.cache_get(key)
         if cached is None:
             cached = self.cache_get(image_key)
         if cached is not None:
             self.cache_hits += 1
             return cached, True
-        payload = {
-            "model": self.model,
-            "temperature": 0,
-            "messages": [{"role": "system", "content": TRANSCRIBE_SYSTEM}, {"role": "user", "content": [
-                {"type": "text", "text": user},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode()}},
-            ]}],
-        }
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode()}}
+        if self.profile == "ocr":
+            messages = [{"role": "user", "content": [image, {"type": "text", "text": user}]}]
+        else:
+            messages = [{"role": "system", "content": system},
+                        {"role": "user", "content": [{"type": "text", "text": user}, image]}]
+        payload = {"model": self.model, "temperature": 0, "messages": messages}
+        if self.profile == "ocr":
+            payload["max_tokens"] = 400          # a derailed OCR model floods newlines
         if self.use_tool:
             payload["tools"] = [SUBMIT_TOOL]
             payload["tool_choice"] = {"type": "function", "function": {"name": "submit_transcript"}}
@@ -224,6 +250,8 @@ class VLMClient:
                 else:
                     r.raise_for_status()
                     text = _extract(r.json()["choices"][0]["message"])
+                    if self.profile == "ocr":
+                        text = _ocr_fixups(text, n_lines)
                     if not text:
                         raise ValueError("empty response")
                     self.cache_put(key, text)

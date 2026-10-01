@@ -159,6 +159,10 @@ def probe(db_dir: Path, keyfreq: Counter, glyphs: dict, min_cov: float,
     return new, 0.0, "new"
 
 
+def _no_spaces(text: str) -> str:
+    return strip_tags(text).replace(" ", "")
+
+
 def _save_debug(opts: Options, st: CueState, tag: str) -> None:
     if not opts.debug_dir:
         return
@@ -389,6 +393,12 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
                 if ocr_text != st.text:
                     stats["italics_from_geometry"] += 1
                 st.text = ocr_text          # same characters: keep deterministic italics
+            elif _no_spaces(ocr_text) == _no_spaces(st.text):
+                # same letters, different word breaks: spaces come from the measured gaps and
+                # the memory's gap statistics, not from the vision model ("Liebst e", "w ollt")
+                stats["spaces_from_geometry"] += 1
+                flagged.setdefault(st.cue.index, []).append(f"spaces from geometry: {st.text!r} -> {ocr_text!r}")
+                st.text = ocr_text
             elif (not lr.alignments or any(c.startswith("misaligned") for c in corrections)
                   or any(a.conflicts >= 2 for a in lr.alignments)):
                 # the VLM text does not even fit the glyphs (dropped/added letters), or only with
@@ -500,6 +510,13 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
         if raw is None or st.source not in ("vlm", "vlm-retry", "vlm-strict"):
             continue
         aligns, _ = align_cue(db, st.lines, fold(raw), gap_t)
+        res_final = recognize(db, st.lines, learn_near=False, lexicon=lexicon)
+        if res_final.ok and _no_spaces(res_final.text()) == _no_spaces(st.text) and \
+                strip_tags(res_final.text()) != strip_tags(st.text):
+            flagged.setdefault(st.cue.index, []).append(f"spaces from geometry (final): {st.text!r} -> {res_final.text()!r}")
+            st.text = res_final.text()
+            stats["spaces_from_geometry_final"] += 1
+            continue
         if not aligns:
             res = recognize(db, st.lines, learn_near=False, lexicon=lexicon)
             if res.ok and strip_tags(res.text()) != strip_tags(st.text):

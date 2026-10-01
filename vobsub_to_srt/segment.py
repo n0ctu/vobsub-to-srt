@@ -12,34 +12,35 @@ from .vobsub import Cue
 _EIGHT = np.ones((3, 3), dtype=bool)
 
 
-PURITY = 0.9          # share of a text colour's foreign neighbours that are of one single kind
 MAX_DENSITY = 0.5     # a colour filling more of its bounding box than this is a backdrop, not text
+MAX_EXPOSURE = 0.15   # text fill and anti-alias rings hardly ever touch transparency; outlines do
+RING_THIN = 1.6       # foreign contacts per pixel: a one-pixel ring has >= 2, a text stroke far less
+RING_CONTACT = 0.35   # share of a ring's foreign contacts that are the outline (it hugs the outline)
 MIN_SHARE = 0.1       # colours smaller than this fraction of the largest text colour are leftovers
 
 
 def fill_mask(cue: Cue) -> np.ndarray:
     """The text pixels of a cue, as a mask cropped to the ink.
 
-    A VobSub cue has up to four palette colours: background, fill, and usually an anti-alias ring
-    and an outline. Only the fill is text. It is told apart by its neighbourhood: the fill touches
-    one single other kind of pixel (the ring, the outline or transparency), while a ring or an
-    outline always sits between two kinds and so has mixed neighbours. A backdrop box fills its
-    bounding box, which text never does. Every colour that qualifies is kept, so cues with two text
-    colours (speaker colours) are read whole. Verified identical to Subtitle Edit's colour
-    isolation on the reference set, and correct on the layouts that isolation gets wrong."""
+    A VobSub cue has up to four palette colours: background, fill, and usually an outline and an
+    anti-alias ring between them. Only the fill is text. The outline is the colour that faces
+    transparency; the fill and the ring both sit inside it. The ring is thin (a one-pixel line has
+    two foreign neighbours per pixel, a text stroke far fewer) and hugs the outline; the fill is
+    thick. Every qualifying colour is kept (two speaker colours in one cue), backdrop boxes are
+    excluded by their density."""
     img = cue.image
     if img.size == 0:
         return np.zeros((0, 0), bool)
     h, w = img.shape
     padded = np.pad(img, 1, constant_values=4)                  # 4 = image border
     opaque = [u for u in range(4) if cue.alpha[u] >= 8]
-    stats: dict[int, tuple[int, float, float]] = {}            # colour -> (count, purity, density)
+    stats: dict[int, dict] = {}
     for v in opaque:
         m = img == v
         n = int(m.sum())
         if n == 0:
             continue
-        hist = np.zeros(5, np.int64)                            # neighbour kinds: 0 transparent, 1-3, 4 border
+        hist = np.zeros(5, np.int64)                            # contacts: 0 transparent, 1-3, 4 border
         for dy, dx in ((0, 1), (2, 1), (1, 0), (1, 2)):
             nb = padded[dy:dy + h, dx:dx + w]
             nb = nb[m & (nb != v)]
@@ -47,16 +48,29 @@ def fill_mask(cue: Cue) -> np.ndarray:
             hist += np.bincount(nb, minlength=5)
         rows, cols = np.nonzero(m.any(axis=1))[0], np.nonzero(m.any(axis=0))[0]
         bbox = (rows[-1] - rows[0] + 1) * (cols[-1] - cols[0] + 1)
-        stats[v] = (n, hist.max() / max(hist.sum(), 1), n / bbox)
+        stats[v] = {"n": n, "hist": hist, "density": n / bbox}
     if not stats:
         return np.zeros((0, 0), bool)
-    cand = {v: s for v, s in stats.items() if s[2] < MAX_DENSITY} or stats
-    text = {v: s for v, s in cand.items() if s[1] >= PURITY}
-    if not text:
-        best = max(cand, key=lambda v: cand[v][1])
-        text = {best: cand[best]}
-    largest = max(s[0] for s in text.values())
-    keep = [v for v, s in text.items() if s[0] >= MIN_SHARE * largest]
+    cand = {v: st for v, st in stats.items() if st["density"] < MAX_DENSITY} or stats
+    backdrop = [v for v in stats if v not in cand]       # a box behind the text acts as background
+    for st in cand.values():
+        exposed = st["hist"][0] + st["hist"][4] + sum(st["hist"][v] for v in backdrop)
+        st["exposure"] = exposed / max(int(st["hist"].sum()), 1)
+    outline = max(cand, key=lambda v: cand[v]["exposure"])
+    inner = {v: st for v, st in cand.items() if v != outline and st["exposure"] < MAX_EXPOSURE}
+    if not inner:
+        # no outline layout: the fill itself faces transparency; take the least exposed colour
+        keep = [min(cand, key=lambda v: cand[v]["exposure"])]
+    else:
+        thin = {v: int(st["hist"].sum()) / st["n"] for v, st in inner.items()}
+        contact = {v: st["hist"][outline] / max(int(st["hist"].sum()), 1) for v, st in inner.items()}
+        fills = [v for v in inner if thin[v] <= RING_THIN] or [min(inner, key=thin.get)]
+        if len(fills) >= 2:              # a thick ring: the one hugging the outline is the ring
+            low = [v for v in fills if contact[v] < RING_CONTACT]
+            if low and len(low) < len(fills):
+                fills = low
+        largest = max(inner[v]["n"] for v in fills)
+        keep = [v for v in fills if inner[v]["n"] >= MIN_SHARE * largest]
     return crop(np.isin(img, keep))
 
 

@@ -403,3 +403,12 @@ def test_render_srt_matches_write_srt(tmp_path):
     write_srt(tmp_path / "x.srt", entries)
     assert (tmp_path / "x.srt").read_text(encoding="utf-8") == render_srt(entries)
     assert render_srt(entries).startswith("1\n00:00:00,000 --> 00:00:01,000\na\n\n2\n")
+
+
+def test_ocr_profile_fixups():
+    from vobsub_to_srt.vlm import _ocr_fixups
+    assert _ocr_fixups("Hello there.\nHello there.", 1) == "Hello there."
+    assert _ocr_fixups("a\nb\na\nb\na\nb", 2) == "a\nb"
+    assert _ocr_fixups("a\nb", 2) == "a\nb"
+    assert _ocr_fixups("```text\nx\n```", 1) == "x"
+    assert _ocr_fixups("a\nb\nc", 1) == "a\nb\nc"          # not a repetition: left to the aligner
