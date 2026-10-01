@@ -77,7 +77,12 @@ def test_cluster_survives_save_and_load(tmp_path):
     a, b = _jitter(g.bits, 1), _jitter(g.bits, 2)
     db.add_vote(glyph_key(a), a, g.top_rel, "e", "", once=set())
     db.add_vote(glyph_key(b), b, g.top_rel, "e", "", once=set())
-    db.save()
+    db.save(final=True)
     db2 = GlyphDB.load(tmp_path / "t.json")
-    assert db2.canonical(glyph_key(b)) == db2.canonical(glyph_key(a))
-    assert trusted_label(db2.lookup(glyph_key(b), g.top_rel).votes)[0] == "e"
+    # the canonical (a) is stored with both votes; the once-seen jitter member b is pruned on save
+    # (rescaled tracks produce thousands) and is found again through the near search
+    assert glyph_key(a) in db2.shapes and glyph_key(b) not in db2.shapes
+    assert db2.find_cluster(b, g.top_rel, "e") == db2.canonical(glyph_key(a))
+    assert sum(db2.lookup(glyph_key(a), g.top_rel).votes.values()) == 2
+    v = db2.lookup(db2.find_cluster(b, g.top_rel, "e"), g.top_rel)       # read through the cluster
+    assert trusted_label(v.votes)[0] == "e"

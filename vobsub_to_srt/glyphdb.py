@@ -31,7 +31,9 @@ OVERRIDE_SHARE = 0.75
 # row or a position (I/l, i/l, 1, punctuation) never cluster across a height difference.
 CLUSTER_TOL = 0.12
 STRICT_TOL = 0.05       # for strict glyphs: an i differs from an l by its dot gap, ~0.1 of the ink
-CLUSTER_MARGIN = 0.06   # lead over the nearest shape with a different label
+CLUSTER_MARGIN = 0.06     # lead over the nearest shape with a different label
+MIN_MEMBER_SEEN = 2       # a jitter member seen once is not kept (rescaled tracks: thousands per file)
+MAX_MEMBERS = 24          # most frequent members kept per cluster; the rest is read via the near search
 STRICT = set("Il|i1!jíìïî")   # punctuation is told apart by size and baseline position instead
 
 
@@ -116,6 +118,7 @@ class Shape:
     variants: list[Variant] = field(default_factory=list)   # only on a cluster's canonical shape
     derived_from: str | None = None   # key of the shape this was near-matched to
     cluster: str = ""                 # canonical shape whose variants hold the votes (own key if canonical)
+    n: int = 1                        # occurrences seen (all files); jitter members seen once are pruned on save
 
     def variant(self, top_rel: int, tol: int = 2, create: bool = False) -> Variant | None:
         best = None
@@ -190,6 +193,10 @@ class GlyphDB:
         # the file's accumulated votes on save (pipeline.apply_geo keeps the in-memory view)
         self.file_geo: tuple[dict, dict] = ({}, {})
         self._geo_credited: set[str] = set()   # clusters whose file geometry votes are already on disk
+        # this file's glyph occurrence counts per key (pipeline sets it); credited to Shape.n once
+        self.file_counts: dict[str, int] = {}
+        self._counts_credited: set[str] = set()
+        self.saved_this_run = False           # a final save (with pruning) follows any mid-run save
 
     @property
     def pos_tol(self) -> int:
@@ -519,6 +526,7 @@ class GlyphDB:
                 "bits": base64.b64encode(np.packbits(s.bits).tobytes()).decode(),
                 "derived_from": s.derived_from,
                 "cluster": s.cluster if s.cluster != s.key else None,
+                "n": s.n,
                 "variants": [{"top_rel": v.top_rel, "votes": dict(v.votes), "styles": v.styles,
                               "geo_italic": v.geo_italic, "geo_bold": v.geo_bold, "prior": v.prior}
                              for v in s.variants],
@@ -539,7 +547,8 @@ class GlyphDB:
         for s in d["shapes"]:
             h, w = s["h"], s["w"]
             bits = np.unpackbits(np.frombuffer(base64.b64decode(s["bits"]), np.uint8))[:h * w].reshape(h, w).astype(bool)
-            shape = Shape(s["key"], bits, derived_from=s.get("derived_from"), cluster=s.get("cluster") or s["key"])
+            shape = Shape(s["key"], bits, derived_from=s.get("derived_from"), cluster=s.get("cluster") or s["key"],
+                          n=int(s.get("n", 2)))      # legacy shapes without a count are kept
             for v in s["variants"]:
                 shape.variants.append(Variant(v["top_rel"], Counter(v["votes"]), v.get("styles", {}),
                                               v.get("geo_italic", [0, 0]), v.get("geo_bold", [0, 0]),
@@ -625,19 +634,54 @@ class GlyphDB:
                 v.geo_bold = [v.geo_bold[0] + gb[0], v.geo_bold[1] + gb[1]]
         self.dirty = True
 
+    def credit_counts(self, counts: dict[str, int], credited: set[str]) -> None:
+        """Add one file's glyph occurrences to Shape.n, each key once per run (a shape starts at 1)."""
+        for k, n in counts.items():
+            sh = self.shapes.get(k)
+            if sh is not None and k not in credited:
+                credited.add(k)
+                sh.n += max(0, n - 1)
+
+    def prune_members(self) -> int:
+        """Drop cluster members that carry no information of their own: jittered variants seen only
+        once (a rescaled track produces thousands per episode, most never recur) and, per cluster,
+        all but the MAX_MEMBERS most frequent members. Votes, sequences and gaps live on canonical
+        shapes and are untouched; a dropped bitmap is still read via the near search."""
+        groups: dict[str, list[Shape]] = {}
+        for sh in self.shapes.values():
+            if sh.cluster != sh.key and not sh.variants:
+                groups.setdefault(sh.cluster, []).append(sh)
+        drop: list[str] = []
+        for members in groups.values():
+            keep = sorted((m for m in members if m.n >= MIN_MEMBER_SEEN), key=lambda m: -m.n)
+            drop += [m.key for m in members if m.n < MIN_MEMBER_SEEN] + [m.key for m in keep[MAX_MEMBERS:]]
+        for k in drop:
+            sh = self.shapes.pop(k)
+            bucket = self.by_size.get(sh.bits.shape)
+            if bucket and k in bucket:
+                bucket.remove(k)
+            self._stacks.pop(sh.bits.shape, None)
+        if drop:
+            self._soft.clear()
+            self.dirty = True
+        return len(drop)
+
     def _adopt(self, other: "GlyphDB") -> None:
         """Continue with another copy's state (after merging into it)."""
-        keep = {"journal", "path", "private_path", "word_memory", "file_geo", "_geo_credited"}
+        keep = {"journal", "path", "private_path", "word_memory", "file_geo", "_geo_credited",
+                "file_counts", "_counts_credited", "saved_this_run"}
         for k, v in other.__dict__.items():
             if k not in keep:
                 setattr(self, k, v)
         self._bearings = None
         self._seq_n = -1
 
-    def save(self, path: Path | None = None) -> None:
+    def save(self, path: Path | None = None, final: bool = False) -> None:
         """Write the DB. If the file exists, this copy's learning is merged into the file's current
         content under a file lock: several workers may learn into the same glyph set at once, each
-        replaying its journal onto what the others wrote (all writes are additive counters)."""
+        replaying its journal onto what the others wrote (all writes are additive counters).
+        `final` (the run's last save) also prunes jitter members; mid-run pruning would remove
+        bitmaps the same file still needs."""
         path = path or self.path
         assert path is not None
         with _locked(path):
@@ -647,6 +691,9 @@ class GlyphDB:
                     other.attach_private(self.private_path.parent, self.word_memory)
                 other.replay(self.journal)
                 other.apply_file_geo(*self.file_geo, self._geo_credited)
+                other.credit_counts(self.file_counts, self._counts_credited)
+                if final:
+                    other.prune_members()
                 other._write(path)
                 self._adopt(other)
             else:
@@ -654,8 +701,12 @@ class GlyphDB:
                 # (pipeline.apply_geo), so every cluster present now counts as credited
                 self._geo_credited |= {self.canonical(k) for k in set(self.file_geo[0]) | set(self.file_geo[1])
                                        if k in self.shapes}
+                self.credit_counts(self.file_counts, self._counts_credited)
+                if final:
+                    self.prune_members()
                 self._write(path)
         self.journal = [] if self.journal is not None else None
+        self.saved_this_run = True
 
     def _write(self, path: Path) -> None:
         self.update_unit()

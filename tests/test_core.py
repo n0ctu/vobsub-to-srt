@@ -512,3 +512,29 @@ def test_concurrent_copies_merge_on_save(tmp_path):
     c_votes = [sum(v.votes.values()) for s in merged.shapes.values() for v in s.variants if max(v.votes, key=v.votes.get, default=None) == "c"]
     assert c_votes == [1]                                                 # not doubled by b's replay
     assert b.learned_sources == merged.learned_sources                    # b continues on the merged state
+
+
+def test_jitter_members_are_pruned_on_save(tmp_path):
+    """Members seen once are dropped on save, frequent ones kept (capped), canonicals and votes untouched."""
+    from vobsub_to_srt.glyphdb import GlyphDB, MAX_MEMBERS
+    db = GlyphDB("t", tmp_path / "t.json")
+    lines = segment(render("abc"))
+    learn_cue(db, lines, "abc", 12, source="img1")
+    a = lines[0].glyphs[0]
+    canon = db.canonical(a.key)
+    # 30 jittered members of 'a': flip one far-corner pixel each so they differ but stay near
+    import numpy as np
+    for k in range(30):
+        bits = a.bits.copy(); bits[0, min(k, bits.shape[1] - 1)] = True
+        key = f"jit{k}"
+        db.join(key, bits, a.top_rel, canon)
+    db.file_counts = {f"jit{k}": (5 if k < 3 else 1) for k in range(30)}   # three recur, the rest are singletons
+    db.save()                                   # mid-run save: nothing pruned yet
+    assert all(f"jit{k}" in db.shapes for k in range(30))
+    db.save(final=True)
+    keys = set(db.shapes)
+    assert canon in keys and all(f"jit{k}" in keys for k in range(3))
+    assert not any(f"jit{k}" in keys for k in range(3, 30))
+    reloaded = GlyphDB.load(tmp_path / "t.json")
+    assert set(reloaded.shapes) == keys and reloaded.shapes["jit0"].n == 5
+    assert sum(1 for s in reloaded.shapes.values() if s.cluster == canon and s.key != canon) <= MAX_MEMBERS

@@ -383,6 +383,7 @@ function describe(e) {
     case 'queue': return null;   // shown in the progress line, not logged (it repeats every few seconds)
     case 'started': return 'started: decoding and segmenting the cues';
     case 'no_vlm': return 'this server has no vision model configured: unknown glyphs will be marked �';
+    case 'notice': return e.kind === 'rescaled' ? `note: this track looks rescaled from another resolution (${Math.round(100 * e.unique_share)}% of ${e.bitmaps} letter bitmaps occur only once); reading relies on shape clustering and needs more vision requests` : `note: ${e.kind}`;
     case 'probe':
       if (e.mode === 'exact') return `glyph set known: ${Math.round(e.coverage * 100)}% of the glyphs match the memory exactly`;
       if (e.mode.startsWith('teacher')) return `a known glyph set at another size covers ${Math.round(e.coverage * 100)}%; learning the rest`;

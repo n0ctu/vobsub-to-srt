@@ -18,6 +18,8 @@ from PIL import Image
 from .align import ALREADY_LEARNED, align_cue, learn_cue, otsu_threshold, reline, reline_cues, restyle, strip_tags
 from . import transfer
 from .glyphdb import GlyphDB, combine_style
+
+RESCALED_ONCE_SHARE = 0.5   # share of glyph bitmaps occurring once above which a track counts as rescaled
 from .lexicon import make_lexicon
 from .names import random_db_name
 from .simplify import CHARSET_LITERAL, CHARSET_SIMPLIFIED, simplify
@@ -192,6 +194,7 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
     fold = (lambda t: t) if opts.keep_special_chars else simplify
     states: list[CueState] = []
     keyfreq: Counter = Counter()
+    report_notes: list[str] = []
     sample_glyph: dict = {}
     all_gaps: list[int] = []
     for c in cues:
@@ -272,6 +275,15 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
     emit("probe", db=db.name, mode=probe_mode, coverage=round(cov, 4))
     flush_glyphs()
     db.attach_private(opts.private_dir, opts.word_memory)
+    db.file_counts = dict(keyfreq)
+    once_share = sum(1 for n in keyfreq.values() if n == 1) / max(1, len(keyfreq))
+    if len(keyfreq) >= 200 and once_share >= RESCALED_ONCE_SHARE:
+        # a track rescaled from another resolution: one-pixel edge jitter makes most letter
+        # bitmaps unique (crisp tracks: ~10-20% unique, rescaled: ~70%). Reading relies on shape
+        # clustering, which costs more vision requests than usual.
+        log.warning("rescaled track suspected: %.0f%% of %d glyph bitmaps occur once", 100 * once_share, len(keyfreq))
+        emit("notice", kind="rescaled", unique_share=round(once_share, 3), bitmaps=len(keyfreq))
+        report_notes.append(f"rescaled track suspected: {100 * once_share:.0f}% of {len(keyfreq)} glyph bitmaps occur once")
     # Geometry votes accumulate across files: what the DB already holds plus this file's votes.
     # (Decisions compare the two counts, so re-running a file cannot flip them.) The votes are
     # only persisted together with real learning; a pure recognition run leaves the DB file untouched.
@@ -609,14 +621,15 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
 
     flush_cues()
     flush_glyphs()
-    if db.dirty:
-        db.save()
+    if db.dirty or db.saved_this_run:
+        db.save(final=True)          # the run's last save prunes jitter members
 
     srt_text = render_srt([(st.cue.start_ms, st.cue.end_ms, st.text or "") for st in states])
     report = {
         "file": display, "language": lang, "charset": charset, "db": str(db.path), "probe": probe_mode, "probe_coverage": cov,
         "cues": len(states), "by_source": dict(stats),
         "vlm_budget": {"max": opts.max_vlm_cues, "used": budget["used"], "exhausted": budget["exhausted"]},
+        "notes": report_notes,
         "vlm_requests": (client.calls - calls0[0]) if client else 0,
         "vlm_throttled_429": (client.throttled - calls0[2]) if client else 0,
         "vlm_cache_hits": (client.cache_hits - calls0[1]) if client else 0,
