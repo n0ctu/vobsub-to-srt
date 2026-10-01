@@ -130,8 +130,13 @@ def probe(db_dir: Path, keyfreq: Counter, glyphs: dict, min_cov: float,
         if db.charset != charset:
             continue          # simplified and literal labels must never mix
         dbs.append(db)
-        cov = sum(n for key, n in keyfreq.items() if key in db.shapes) / total
-        log.info("probe: %s covers %.1f%% of glyph occurrences (exact)", p.name, 100 * cov)
+        exact = sum(n for key, n in keyfreq.items() if key in db.shapes) / total
+        cov = exact
+        if exact < min_cov:
+            near = sum(n for key, n in keyfreq.items()
+                       if key not in db.shapes and near_match(db, glyphs[key])[1] is not None) / total
+            cov = exact + near
+        log.info("probe: %s covers %.1f%% of glyph occurrences (%.1f%% exact)", p.name, 100 * cov, 100 * exact)
         if cov > best_cov:
             best, best_cov = db, cov
     if best is not None and best_cov >= min_cov:
@@ -265,24 +270,37 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
     # (Decisions compare the two counts, so re-running a file cannot flip them.) The votes are
     # only persisted together with real learning; a pure recognition run leaves the DB file untouched.
     prev_geo = {k: [list(v.geo_italic), list(v.geo_bold)] for k, sh in db.shapes.items() for v in sh.variants[:1]}
-    for key in set(geo) | set(geo_b):
-        pi, pb = prev_geo.get(key, ([0, 0], [0, 0]))
-        gi, gb = geo.get(key, [0, 0]), geo_b.get(key, [0, 0])
-        geo[key] = [pi[0] + gi[0], pi[1] + gi[1]]
-        geo_b[key] = [pb[0] + gb[0], pb[1] + gb[1]]
+    file_geo, file_geo_b = dict(geo), dict(geo_b)      # this file's votes per glyph key
+
+    def pooled_geo(key: str) -> tuple[list[int], list[int]]:
+        """Geometry votes of a glyph's whole cluster: the DB's accumulated votes plus this file's
+        votes of every member (jittered variants of one letter are one letter)."""
+        canon = db.canonical(key)
+        pi, pb = prev_geo.get(canon, ([0, 0], [0, 0]))
+        gi, gb = list(pi), list(pb)
+        for k in members.get(canon, (key,)):
+            fi, fb = file_geo.get(k, [0, 0]), file_geo_b.get(k, [0, 0])
+            gi[0] += fi[0]; gi[1] += fi[1]; gb[0] += fb[0]; gb[1] += fb[1]
+        return gi, gb
+
+    members: dict[str, list[str]] = {}
 
     def apply_geo() -> None:
         """Italic/bold come from glyph geometry (word slant, stroke width); VLM tags only break ties."""
-        for key in set(geo) | set(geo_b):
-            shape = db.shapes.get(key)
+        members.clear()
+        for k in set(file_geo) | set(file_geo_b):
+            members.setdefault(db.canonical(k), []).append(k)
+        for canon, keys in members.items():
+            shape = db.shapes.get(canon)
             if shape:
+                gi, gb = pooled_geo(keys[0])
                 for v in shape.variants:
-                    v.geo_italic = list(geo.get(key, [0, 0]))
-                    v.geo_bold = list(geo_b.get(key, [0, 0]))
+                    v.geo_italic, v.geo_bold = gi, gb
 
     def style_of(g, vlm_style: str) -> str:
         vlm = {f: [0, 1] if f in vlm_style else [1, 0] for f in "bi"}
-        st = combine_style(geo_b.get(g.key, [0, 0]), geo.get(g.key, [0, 0]), vlm)
+        gi, gb = pooled_geo(g.key)
+        st = combine_style(gb, gi, vlm)
         return st + "u" if g.underlined else st
 
     apply_geo()
@@ -354,7 +372,7 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
             if corrections:
                 stats["char_arbitrated"] += 1
                 flagged.setdefault(st.cue.index, []).append("DB overrides VLM: " + ", ".join(corrections))
-                log.warning("cue %d: confirmed glyphs override VLM: %s", st.cue.index, ", ".join(corrections))
+                log.warning("cue %d: arbitration: %s", st.cue.index, ", ".join(corrections))
         if not lr.learned and lr.reason != ALREADY_LEARNED:
             st.notes.append(f"not learned: {lr.reason}")
             log.debug("cue %d not learnable: %s", st.cue.index, lr.reason)
@@ -371,10 +389,11 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
                 if ocr_text != st.text:
                     stats["italics_from_geometry"] += 1
                 st.text = ocr_text          # same characters: keep deterministic italics
-            elif not lr.alignments:
-                # the VLM text does not even fit the glyphs (dropped/added letters) while the DB
-                # reads the whole cue: trust the DB. Where the text does fit, per-character
-                # arbitration (with its stricter override threshold) has already decided.
+            elif (not lr.alignments or any(c.startswith("misaligned") for c in corrections)
+                  or any(a.conflicts >= 2 for a in lr.alignments)):
+                # the VLM text does not even fit the glyphs (dropped/added letters), or only with
+                # several contradictions of confirmed glyphs, while the DB reads the whole cue:
+                # trust the DB. A single contradiction is left to per-character arbitration.
                 note = f"VLM {st.text!r} vs nOCR {ocr_text!r}"
                 flagged.setdefault(st.cue.index, []).append(note)
                 st.text, st.source = ocr_text, "nocr-arbitrated"
@@ -492,12 +511,15 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
             continue
         if aligns:
             text, corrections = restyle(st.lines, aligns, style_of, lexicon)
+            if any(c.startswith("misaligned") for c in corrections) or any(a.conflicts >= 2 for a in aligns):
+                res = recognize(db, st.lines, learn_near=False, lexicon=lexicon)
+                if res.ok:
+                    text = res.text()        # the text only fits with contradictions: the memory's reading wins
             if corrections and text != st.text:
                 st.text = text
                 stats["char_arbitrated_final"] += 1
                 flagged.setdefault(st.cue.index, []).append("DB overrides VLM (final): " + ", ".join(corrections))
-                log.warning("cue %d: confirmed glyphs override VLM (final pass): %s",
-                            st.cue.index, ", ".join(corrections))
+                log.warning("cue %d: arbitration (final pass): %s", st.cue.index, ", ".join(corrections))
 
     flush_cues()          # re-read / re-arbitration may have changed texts
 

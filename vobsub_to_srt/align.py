@@ -9,13 +9,15 @@ import numpy as np
 from .glyphdb import GlyphDB, trusted_label
 from .recognize import AMBIG_IL, _decide, confirmed, confusable
 from .segment import Line
-from .styling import STYLE_ORDER, majority_style, parse_styled, render_styled  # noqa: F401
+from .styling import inherit_punct_styles, STYLE_ORDER, majority_style, parse_styled, render_styled  # noqa: F401
 
 INF = float("inf")
 _TAG = re.compile(r"</?\s*([a-zA-Z]+)[^>]*>")
 MAX_COST_PER_CHAR = 0.6
 CONFLICT_COST = 6.0          # VLM char contradicts a confirmed glyph label
 PRIOR_CONFLICT_COST = 1.0    # VLM char contradicts a teacher prior (weak anchor)
+QUOTES = {"'", '"', "`", "\u00b4"}
+PUNCT = QUOTES | set(".,:;!?-_\u2026\u201c\u201d\u201e\u2018\u2019")   # characters drawn as small parts
 COMBINE = {"''": '"', "’’": "”", "‘‘": "“", ",,": "„", "...": "…"}   # glyph runs that form one char
 MAX_CONFLICT_SHARE = 0.2     # more conflicts than this per line = misalignment, not VLM misreads
 
@@ -130,11 +132,15 @@ def align_line(db: GlyphDB, line: Line, styled: list[tuple[str, bool]], gap_thre
                 return INF
         # A glyph with a trusted letter label is never a part of a different character: merging it
         # means the VLM dropped a letter ("Verdopeln" over p p, "Lächer" over h l). Allowed only
-        # if the glyphs together spell the char (sequence rule, '' -> ", ... -> …).
-        if any(trusted[i:i + s]) or all(known[i:i + s]):
-            seq = db.sequences.get("|".join(g.key for g in gl[i:i + s]))
+        # if the glyphs together spell the char (sequence rule, '' -> ", ... -> …). Punctuation
+        # parts (ticks, dots) are different: a double quote is drawn as two ticks and often read
+        # as one, so parts that are unknown or punctuation may form any punctuation character.
+        letters = any(trusted[t] and trusted[t] not in PUNCT for t in range(i, i + s))
+        if letters or all(known[i:i + s]):
+            seq = db.sequences.get(db.seq_key(gl[i:i + s]))
             together = "".join(known[t] or "\0" for t in range(i, i + s))
-            if not (seq and trusted_label(seq)[0] == chars[j]) and COMBINE.get(together, together) != chars[j]:
+            combined = (trusted_label(seq)[0] if seq else None) or COMBINE.get(together, together)
+            if combined != chars[j] and (letters or chars[j] not in PUNCT):
                 return INF
         span = gl[i + s - 1].right - gl[i].x
         c = 0.5 * abs(span - exp_w(chars[j])) / avg_w + 1.5 * (s - 1)
@@ -146,7 +152,9 @@ def align_line(db: GlyphDB, line: Line, styled: list[tuple[str, bool]], gap_thre
         return c
 
     if m == n:
-        # fast path: one glyph per char, spaces agree with gaps, no conflict with known labels
+        # fast path: one glyph per char, spaces agree with gaps, no conflict with confirmed labels.
+        # With conflicts the one-to-one reading may be a shifted one (a fused pair or a two-part
+        # quote making the counts match by accident): the DP below decides then.
         cost = sum(boundary(i, i) for i in range(m))
         il = lambda a, b: a in AMBIG_IL and b in AMBIG_IL
         n_conf = sum(1 for i in range(m) if strong[i] and strong[i] != chars[i])
@@ -155,8 +163,10 @@ def align_line(db: GlyphDB, line: Line, styled: list[tuple[str, bool]], gap_thre
         if cost == 0.0 and n_conf <= MAX_CONFLICT_SHARE * m:
             maps = [Mapping((i, i + 1), (i, i + 1), chars[i], sty[i], strong[i], alts[i]) for i in range(m)]
             n_conf -= _il_pairs(maps)
-            return Alignment(maps, CONFLICT_COST * (n_conf + soft), {i for i in range(1, m) if i in word_start},
+            fast = Alignment(maps, CONFLICT_COST * (n_conf + soft), {i for i in range(1, m) if i in word_start},
                              n_conf, soft)
+            if not _shifted(fast):
+                return fast
 
     dp = np.full((m + 1, n + 1), INF)
     back: dict[tuple[int, int], tuple[int, int]] = {}
@@ -197,7 +207,7 @@ def align_line(db: GlyphDB, line: Line, styled: list[tuple[str, bool]], gap_thre
         if i1 - i0 == 1:
             lab = strong[i0]
         else:   # several glyphs for one char: trusted sequence rule, else their confirmed labels
-            seq = db.sequences.get("|".join(g.key for g in gl[i0:i1]))
+            seq = db.sequences.get(db.seq_key(gl[i0:i1]))
             lab = trusted_label(seq)[0] if seq else None
             parts = [strong[t] or unanimous[t] for t in range(i0, i1)]
             if lab is None and any(strong[i0:i1]) and all(parts):
@@ -248,6 +258,8 @@ def align_cue(db: GlyphDB, lines: list[Line], vlm_text: str,
             return None, f"too many conflicts with confirmed glyphs ({a.conflicts})"
         if a.soft_conflicts >= 2:
             return None, f"misaligned: {a.soft_conflicts} confirmed glyphs contradicted"
+        if _shifted(a):
+            return None, "misaligned: shifted run of contradictions"   # never learn from a shifted reading
         single = sum(1 for mp in a.mappings if mp.segs[1] - mp.segs[0] == 1 and mp.db_label
                      and mp.db_label != mp.text)
         cost = a.cost - CONFLICT_COST * (single + a.soft_conflicts)   # VLM misreads, not alignment errors
@@ -282,14 +294,14 @@ def learn_cue(db: GlyphDB, lines: list[Line], vlm_text: str, gap_threshold: floa
                 prev = confirmed(v)
                 if prev and prev != mp.text:
                     conflicts.append(f"{prev!r}->{mp.text!r}")
-                if (g.key, g.top_rel, mp.text) not in seen:
-                    seen.add((g.key, g.top_rel, mp.text))
-                    db.add_vote(g.key, g.bits, g.top_rel, mp.text, mp.style)
+                # one vote per (cluster, label) per cue: jittered variants of one letter in one
+                # cue are not independent evidence
+                db.add_vote(g.key, g.bits, g.top_rel, mp.text, mp.style, once=seen)
             else:
                 keys = [gl[t].key for t in range(s0, s1)]
                 if (tuple(keys), mp.text) not in seen:
                     seen.add((tuple(keys), mp.text))
-                    db.add_sequence(keys, mp.text)
+                    db.add_sequence(gl[s0:s1], mp.text)
         # gaps between mappings
         for mp_a, mp_b in zip(a.mappings, a.mappings[1:]):
             ga, gb = gl[mp_a.segs[1] - 1], gl[mp_b.segs[0]]
@@ -317,12 +329,15 @@ def restyle(lines: list[Line], aligns: list[Alignment], style_of, lexicon=None) 
     out = []
     corrections: list[str] = []
     for line, a in zip(lines, aligns):
+        shifted = _shifted(a)
+        if shifted:
+            corrections.append(f"misaligned: {shifted} contradictions in a shifted run, VLM text kept")
         words: list[list[tuple[Mapping, str, str]]] = [[]]
         for mp in a.mappings:
             if mp.segs[0] in a.spaces_before:
                 words.append([])
             text = mp.text
-            if mp.db_label and mp.db_label != mp.text:
+            if mp.db_label and mp.db_label != mp.text and not shifted:
                 corrections.append(f"{mp.text!r}->{mp.db_label!r}")
                 text = mp.db_label
             sts = [style_of(line.glyphs[t], mp.style) for t in range(*mp.segs)]
@@ -330,14 +345,33 @@ def restyle(lines: list[Line], aligns: list[Alignment], style_of, lexicon=None) 
         if lexicon is not None:
             for w in words:
                 _lexicon_word(w, lexicon, corrections)
+        texts = ["".join(text for _, text, _ in w) for w in words]
+        wstyles = inherit_punct_styles([(txt, majority_style([st_ for _, text, st_ in w for _ in text]))
+                                        for txt, w in zip(texts, words)])
         chars: list[tuple[str, str]] = []
-        for k, w in enumerate(words):
+        for k, (txt, st) in enumerate(zip(texts, wstyles)):
             if k:
                 chars.append((" ", ""))
-            st = majority_style([st_ for _, text, st_ in w for _ in text])
-            chars += [(c, st) for _, text, _ in w for c in text]
+            chars += [(c, st) for c in txt]
         out.append(render_styled(chars))
     return "\n".join(out), corrections
+
+
+def _shifted(a: Alignment) -> int:
+    """Number of contradictions when the alignment is off by one glyph: a run of neighbouring
+    mappings where the memory reads glyph k as the character the VLM put on glyph k+1 (or k-1).
+    Such a run means the VLM text and the glyphs do not line up (a character drawn as two glyphs,
+    read as one), not that the VLM misread six letters in a row. Overriding would garble the word."""
+    maps = a.mappings
+    conflicts = [mp.db_label is not None and mp.db_label != mp.text for mp in maps]
+    if sum(conflicts) < 3:
+        return 0
+    pairs = 0
+    for k in range(len(maps) - 1):
+        if conflicts[k] and conflicts[k + 1] and (maps[k].db_label == maps[k + 1].text
+                                                   or maps[k].text == maps[k + 1].db_label):
+            pairs += 1
+    return sum(conflicts) if pairs >= 2 else 0
 
 
 def _lexicon_word(word: list, lexicon, corrections: list[str]) -> None:

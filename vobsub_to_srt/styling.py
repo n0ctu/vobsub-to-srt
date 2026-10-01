@@ -63,6 +63,23 @@ def render_styled(chars: list[tuple[str, str]]) -> str:
     return "".join(out)
 
 
+def inherit_punct_styles(words: list[tuple[str, str]]) -> list[str]:
+    """Word styles where a word without letters or digits (a dash, quotes, an ellipsis) takes the
+    style of the next word with letters, else the previous one. Punctuation has no slant or
+    stroke of its own: its glyph looks the same in an italic and an upright line, so its own
+    style votes only reflect which kind of line is more common in the file."""
+    styles = [s for _, s in words]
+    lettered = [any(c.isalnum() for c in t) for t, _ in words]
+    for k, ok in enumerate(lettered):
+        if ok:
+            continue
+        nxt = next((styles[j] for j in range(k + 1, len(words)) if lettered[j]), None)
+        prv = next((styles[j] for j in range(k - 1, -1, -1) if lettered[j]), None)
+        if nxt is not None or prv is not None:
+            styles[k] = nxt if nxt is not None else prv
+    return styles
+
+
 def majority_style(styles: list[str]) -> str:
     return "".join(f for f in STYLE_ORDER if sum(f in s for s in styles) * 2 > len(styles))
 

@@ -7,12 +7,12 @@ import numpy as np
 
 from collections import Counter
 
-from .glyphdb import OVERRIDE_SHARE, OVERRIDE_VOTES, GlyphDB, Variant, trusted_label
-from .styling import majority_style, render_styled
+from .glyphdb import CLUSTER_TOL, OVERRIDE_SHARE, OVERRIDE_VOTES, GlyphDB, Variant, diff_ratio, is_strict, tol_for, trusted_label
+from .styling import inherit_punct_styles, majority_style, render_styled
 from .segment import Glyph, Line
 
-T_ACCEPT = 0.08     # max pixel-diff ratio for a near match
-T_MARGIN = 0.06     # required advantage over best candidate with a different label
+T_ACCEPT = CLUSTER_TOL   # max pixel-diff ratio for a near match
+T_MARGIN = 0.06          # required advantage over best candidate with a different label
 AMBIG_IL = {"I", "l", "|"}      # glyphs that can be pixel-identical in sans-serif fonts
 
 
@@ -76,13 +76,14 @@ def render_line(l: LineResult, placeholder: str = "\ufffd") -> str:
         if i > 0 and l.spaces[i - 1] is not False:
             words.append([])
         words[-1].append(it)
+    texts = ["".join(it.text if it.text is not None else placeholder for it in w) for w in words]
+    wstyles = inherit_punct_styles([(txt, majority_style([it.style for it in w for _ in (it.text or "x")]))
+                                    for txt, w in zip(texts, words)])
     chars: list[tuple[str, str]] = []
-    for k, w in enumerate(words):
+    for k, (txt, st) in enumerate(zip(texts, wstyles)):
         if k:
             chars.append((" ", ""))
-        styles = [it.style for it in w for _ in (it.text or "x")]
-        st = majority_style(styles)
-        chars += [(c, st) for it in w for c in (it.text if it.text is not None else placeholder)]
+        chars += [(c, st) for c in txt]
     return render_styled(chars)
 
 
@@ -112,44 +113,27 @@ def confirmed(v: Variant | None) -> str | None:
     return top or None
 
 
-def _diff_ratio(a: np.ndarray, b: np.ndarray) -> float:
-    h, w = max(a.shape[0], b.shape[0]) + 2, max(a.shape[1], b.shape[1]) + 2
-    A = np.zeros((h, w), bool)
-    A[1:1 + a.shape[0], 1:1 + a.shape[1]] = a
-    na, nb = int(a.sum()), int(b.sum())
-    best = None
-    for dy in (0, 1, 2):
-        for dx in (0, 1, 2):
-            if dy + b.shape[0] > h or dx + b.shape[1] > w:
-                continue
-            B = np.zeros((h, w), bool)
-            B[dy:dy + b.shape[0], dx:dx + b.shape[1]] = b
-            d = int((A ^ B).sum())
-            best = d if best is None else min(best, d)
-    return best / max(1.0, (na + nb) / 2)
+_diff_ratio = diff_ratio
 
 
 def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float]:
-    """Best near match among confirmed shapes of the SAME height (width +-1) at the same position.
-    Within one raster a height difference means a different glyph (I vs l), so it is never tolerated.
-    Returns (key, variant, ratio) or Nones. Callers treat the result as a suggestion only."""
+    """Best near match among confirmed shapes (any cluster member) of the same size +-1 px at the
+    same position. A height difference is only bridged for labels whose identity does not hang on
+    one pixel row (never for I/l, i, 1, punctuation). Returns (key, variant, ratio) or Nones."""
     cands: list[tuple[float, str, Variant, str]] = []
-    for dw in (-1, 0, 1):
-        for key in db.by_size.get((g.h, g.w + dw), ()):
-            shape = db.shapes[key]
-            v = shape.variant(g.top_rel, db.pos_tol)
-            if v is None:
-                continue
-            label, _ = _decide(v)
-            if label is None or label == "":
-                continue
-            cands.append((_diff_ratio(g.bits, shape.bits), key, v, label))
+    for r, key, dh in db.near_candidates(g.bits):
+        v = db.lookup(key, g.top_rel)
+        if v is None:
+            continue
+        label, _ = _decide(v)
+        if label is None or label == "" or (dh and is_strict(label)):
+            continue
+        if r <= tol_for(label):
+            cands.append((r, key, v, label))
     if not cands:
         return None, None, 1.0
     cands.sort(key=lambda c: c[0])
     best = cands[0]
-    if best[0] > T_ACCEPT:
-        return None, None, best[0]
     other = next((c for c in cands[1:] if c[3] != best[3]), None)
     if other is not None and other[0] - best[0] < T_MARGIN:
         return None, None, best[0]
@@ -171,7 +155,7 @@ def recognize_line(db: GlyphDB, line: Line, learn_near: bool = True, lexicon=Non
         seq_hit = None
         for k in (3, 2):
             if i + k <= len(gl):
-                key = "|".join(g.key for g in gl[i:i + k])
+                key = db.seq_key(gl[i:i + k])
                 votes = db.sequences.get(key)
                 label = trusted_label(votes)[0] if votes else None
                 max_gap = 0.25 * (line.y1 - line.y0)
@@ -191,9 +175,8 @@ def recognize_line(db: GlyphDB, line: Line, learn_near: bool = True, lexicon=Non
         if v is None:
             key, nv, ratio = near_match(db, g)
             if nv is not None and learn_near:
-                # one unconfirmed vote: the VLM still has to agree before this shape is trusted
-                label, _ = _decide(nv)
-                db.add_vote(g.key, g.bits, g.top_rel, label, nv.style(), derived_from=key)
+                # a jittered variant of a known shape: it joins the cluster and shares its votes
+                db.join(g.key, g.bits, g.top_rel, key)
                 v = db.lookup(g.key, g.top_rel)
                 via = "near"
         if v is None:

@@ -287,6 +287,7 @@ def italic_votes(all_lines: list[list[Line]], gap_threshold: float) -> dict[str,
     Pass 1: only words with an unambiguous slant vote. Pass 2: every word is classified by its
     confidently known glyphs, else by its neighbouring words, else by its own slant; all its glyphs vote."""
     words_by_line: list[list[list[Glyph]]] = []
+    small: set[str] = set()      # punctuation-sized glyphs: they carry no slant and never decide
     for lines in all_lines:
         for l in lines:
             words: list[list[Glyph]] = [[]]
@@ -294,6 +295,8 @@ def italic_votes(all_lines: list[list[Line]], gap_threshold: float) -> dict[str,
                 if i and l.gaps[i - 1] > gap_threshold:
                     words.append([])
                 words[-1].append(g)
+                if g.h < 0.4 * (l.y1 - l.y0):
+                    small.add(g.key)
             words_by_line.append(words)
     first: dict[str, list[int]] = {}
     cls_cache: list[list[str]] = []
@@ -304,7 +307,8 @@ def italic_votes(all_lines: list[list[Line]], gap_threshold: float) -> dict[str,
             row.append(c)
             if c != "?":
                 for g in w:
-                    first.setdefault(g.key, [0, 0])[1 if c == "i" else 0] += 1
+                    if g.key not in small:
+                        first.setdefault(g.key, [0, 0])[1 if c == "i" else 0] += 1
         cls_cache.append(row)
 
     def decided(key: str) -> str | None:
