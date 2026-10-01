@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .align import ALREADY_LEARNED, align_cue, learn_cue, otsu_threshold, restyle, strip_tags
+from .align import ALREADY_LEARNED, align_cue, learn_cue, otsu_threshold, reline, restyle, strip_tags
 from . import transfer
 from .glyphdb import GlyphDB, combine_style
 from .lexicon import make_lexicon
@@ -335,14 +335,19 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
         if acc is not None:
             client.cache_hits += 1
             vlm_raw[st.cue.index] = acc
-            return fold(acc)
+            return relined(st, acc)
         png = mask_to_png(st.mask, scale=3 if strict else 2)
         text, cached = await client.transcribe_ex(png, max(1, len(st.lines)), lang, strict=strict,
                                                   context=history(st) if opts.context else None)
         if not cached:
             budget["used"] += 1
         vlm_raw[st.cue.index] = text
-        return fold(text)
+        return relined(st, text)
+
+    def relined(st: CueState, text: str) -> str:
+        """The VLM's line breaks are not trusted: the image's lines decide (align.reline)."""
+        text = fold(text)
+        return text if opts.mode == "vlm-only" else reline(db, st.lines, text, gap_t)
 
 
     def apply_vlm(st: CueState, text: str, source: str) -> None:
@@ -509,7 +514,7 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
         raw = vlm_raw.get(st.cue.index)
         if raw is None or st.source not in ("vlm", "vlm-retry", "vlm-strict"):
             continue
-        aligns, _ = align_cue(db, st.lines, fold(raw), gap_t)
+        aligns, _ = align_cue(db, st.lines, relined(st, raw), gap_t)
         res_final = recognize(db, st.lines, learn_near=False, lexicon=lexicon)
         if res_final.ok and _no_spaces(res_final.text()) == _no_spaces(st.text) and \
                 strip_tags(res_final.text()) != strip_tags(st.text):

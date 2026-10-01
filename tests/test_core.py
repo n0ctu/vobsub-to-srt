@@ -412,3 +412,37 @@ def test_ocr_profile_fixups():
     assert _ocr_fixups("a\nb", 2) == "a\nb"
     assert _ocr_fixups("```text\nx\n```", 1) == "x"
     assert _ocr_fixups("a\nb\nc", 1) == "a\nb\nc"          # not a repetition: left to the aligner
+
+
+def test_reline_splits_merged_lines_at_the_image_breaks():
+    from vobsub_to_srt.align import reline
+    db = GlyphDB("t")
+    lines = segment(render("Hello there\nmy friend"))
+    assert len(lines) == 2
+    # the VLM merged both lines, with and without a <br>, with a break inside a word, or with
+    # a break at the wrong word: the image's lines decide
+    for text in ("Hello there my friend", "Hello there<br>my friend", "Hello there<br />my friend",
+                 "Hello\nthere my friend", "Hello there my\nfriend", "Hello there\nmy friend"):
+        assert reline(db, lines, text, 12) == "Hello there\nmy friend", text
+
+
+def test_reline_keeps_styles_across_the_break():
+    from vobsub_to_srt.align import reline
+    db = GlyphDB("t")
+    lines = segment(render("Hello there\nmy friend"))
+    assert reline(db, lines, "<i>Hello there my friend</i>", 12) == "<i>Hello there</i>\n<i>my friend</i>"
+    assert reline(db, lines, "Hello <i>there my</i> friend", 12) == "Hello <i>there</i>\n<i>my</i> friend"
+
+
+def test_reline_splits_inside_a_word_when_the_vlm_dropped_the_space():
+    from vobsub_to_srt.align import reline
+    db = GlyphDB("t")
+    lines = segment(render("Hello\nthere"))
+    assert reline(db, lines, "Hellothere", 12) == "Hello\nthere"
+
+
+def test_reline_single_line_only_flattens():
+    from vobsub_to_srt.align import reline
+    db = GlyphDB("t")
+    lines = segment(render("Hello there"))
+    assert reline(db, lines, "Hello\nthere", 12) == "Hello there"

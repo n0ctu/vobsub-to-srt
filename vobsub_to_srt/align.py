@@ -264,6 +264,74 @@ def align_cue(db: GlyphDB, lines: list[Line], vlm_text: str,
     return aligns, ""
 
 
+_BREAK = re.compile(r"<\s*br\s*/?\s*>|\n", re.I)
+RELINE_TOL = 3               # chars a line's text may differ from its glyph count at a candidate split
+
+
+def flatten(text: str) -> list[tuple[str, str]]:
+    """The VLM's line breaks (newlines, <br>) become spaces: one styled character stream."""
+    return parse_styled(_BREAK.sub(" ", text))
+
+
+def reline(db: GlyphDB, lines: list[Line], vlm_text: str, gap_threshold: float) -> str:
+    """Line breaks come from the image, not from the VLM. Flatten the VLM text and split it where
+    the glyph lines end: among the word boundaries whose character count fits the glyph count of
+    the line (+- RELINE_TOL), the split with the lowest alignment cost wins; with no fitting word
+    boundary any character position is a candidate (the VLM merged two words across the break).
+    If nothing aligns, the split closest to the glyph count is used."""
+    styled = flatten(vlm_text)
+    while styled and styled[0][0] == " ":
+        styled.pop(0)
+    if len(lines) <= 1 or not styled:
+        return render_styled(styled)
+    counts = [len(l.glyphs) for l in lines]
+
+    def solve(chars: list[tuple[str, str]], k: int) -> tuple[float, list[list[tuple[str, str]]]]:
+        if k == len(lines) - 1:
+            a = align_line(db, lines[k], chars, gap_threshold) if chars else None
+            return (a.cost if a else INF), [chars]
+        want = counts[k]
+        n_total = sum(1 for c, _ in chars if c != " ")
+        cands: list[tuple[int, int]] = []     # (split index, |count - want|)
+        n = 0
+        for idx, (c, _) in enumerate(chars):
+            if c == " ":
+                if abs(n - want) <= RELINE_TOL and n_total - n >= 1:
+                    cands.append((idx, abs(n - want)))
+            else:
+                n += 1
+        if not cands:                          # no word boundary fits: split inside a word
+            n = 0
+            for idx, (c, _) in enumerate(chars):
+                if c != " ":
+                    if 0 < idx and abs(n - want) <= RELINE_TOL and n_total - n >= 1:
+                        cands.append((idx, abs(n - want)))
+                    n += 1
+        best: tuple[float, int, list] | None = None
+        for idx, dev in cands:
+            left = chars[:idx]
+            right = chars[idx:]
+            while right and right[0][0] == " ":
+                right = right[1:]
+            while left and left[-1][0] == " ":
+                left = left[:-1]
+            if not left or not right:
+                continue
+            a = align_line(db, lines[k], left, gap_threshold)
+            cost = a.cost if a else INF
+            sub_cost, rest = solve(right, k + 1)
+            total = cost + sub_cost
+            key = (total, dev)
+            if best is None or key < (best[0], best[1]):
+                best = (total, dev, [left] + rest)
+        if best is None:
+            return INF, [chars] + [[] for _ in range(len(lines) - k - 1)]
+        return best[0], best[2]
+
+    _, parts = solve(styled, 0)
+    return "\n".join(render_styled(pt) for pt in parts if pt)
+
+
 ALREADY_LEARNED = "already learned from this image"
 
 
