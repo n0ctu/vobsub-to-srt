@@ -4,7 +4,7 @@ The deferred spell-check pass (text only) will get its own system prompt here; i
 mixed with the transcription prompt, whose whole point is to NOT correct anything.
 """
 
-PROMPT_VERSION = "v5"
+PROMPT_VERSION = "v6"
 
 TRANSCRIBE_SYSTEM = (
     "You are a literal OCR engine for subtitle images. You copy the characters that are written in the "
@@ -16,9 +16,8 @@ TRANSCRIBE_SYSTEM = (
     "- Keep every punctuation mark as drawn: straight vs. curly quotes, single vs. double quotes, "
     "apostrophe ' vs. acute accent ´ vs. grave accent ` (e.g. O´Neil stays O´Neil), "
     "'...' as three dots, hyphens and dashes, spaces before punctuation if present.\n"
-    "- One output line per visual text line, top to bottom. Do not merge or split lines.\n"
     "- Preserve formatting with HTML tags: <i>...</i> for italic, <b>...</b> for bold, <u>...</u> for "
-    "underlined text. Close open tags at the end of each line and reopen them on the next line.\n"
+    "underlined text.\n"
     "- Output only the transcription: no quotes around it, no commentary, no code fences."
 )
 
@@ -49,8 +48,8 @@ SUBMIT_TOOL = {
                 "lines": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "One entry per visual text line, top to bottom, exactly as written, "
-                                   "with <i>/<b>/<u> tags for formatting.",
+                    "description": "The text as written, with <i>/<b>/<u> tags for formatting. "
+                                   "One entry per visual text line if you can tell them apart.",
                 }
             },
             "required": ["lines"],

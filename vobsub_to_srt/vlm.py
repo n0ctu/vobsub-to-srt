@@ -74,6 +74,7 @@ def _extract(message: dict) -> str:
 
 
 OCR_USER = "OCR:"
+OCR_PROMPT_VERSION = "v5"      # the bare OCR prompt has not changed since PROMPT_VERSION v5
 
 
 def _ocr_fixups(text: str, n_lines: int) -> str:
@@ -180,7 +181,8 @@ class VLMClient:
 
     def _key(self, png: bytes, prompt: str) -> str:
         h = hashlib.sha256()
-        for part in (self.model, PROMPT_VERSION, prompt):
+        version = PROMPT_VERSION if self.profile == "chat" else OCR_PROMPT_VERSION
+        for part in (self.model, version, prompt):
             h.update(part.encode())
             h.update(b"\0")
         h.update(png)
