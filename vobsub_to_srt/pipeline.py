@@ -96,17 +96,24 @@ def _unknown_keys(db: GlyphDB, st: CueState) -> set[str]:
 
 
 def glyph_items(db: GlyphDB, glyphs: dict, keyfreq: Counter) -> dict[str, dict]:
-    """Trusted glyph shapes of a file, for display: key -> {label, w, h, bits, n, style}.
+    """Trusted glyph shapes of a file, for display, one entry per cluster: canonical key ->
+    {label, w, h, bits, n, style}. Jittered variants of one letter (a rescaled track has
+    thousands) are one entry, drawn with the file's most frequent variant and counted together.
     Shapes without a trusted label (unknown, quarantined, fragments) are left out."""
     out: dict[str, dict] = {}
-    for key, g in glyphs.items():
+    for key, g in sorted(glyphs.items(), key=lambda kv: -keyfreq[kv[0]]):
         v = db.lookup(key, g.top_rel)
         label = _decide(v)[0] if v else None
         if not label:
             continue
-        out[key] = {"key": key, "label": label, "w": g.w, "h": g.h,
-                    "bits": base64.b64encode(np.packbits(g.bits).tobytes()).decode(),
-                    "n": keyfreq[key], "style": v.style()}
+        canon = db.canonical(key) if key in db.shapes else key
+        it = out.get(canon)
+        if it is None:
+            out[canon] = {"key": canon, "label": label, "w": g.w, "h": g.h,
+                          "bits": base64.b64encode(np.packbits(g.bits).tobytes()).decode(),
+                          "n": keyfreq[key], "style": v.style()}
+        else:
+            it["n"] += keyfreq[key]
     return out
 
 
@@ -239,22 +246,23 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
         if items:
             emit("cues", items=items, resolved=len(emitted))
 
-    shown: dict[str, tuple[str, str]] = {}      # key -> (label, style) last sent
-    first_glyph_flush = [True]
+    shown: dict[str, tuple[str, str]] = {}      # cluster -> (label, style) last sent
+    start_shapes: set[str] = set()               # clusters the memory held before this file
 
     def flush_glyphs() -> None:
         """Send glyph shapes whose trusted label is new or changed (live glyph tables)."""
         if not opts.progress:
             return
+        if not shown and not start_shapes:
+            start_shapes.update(db.shapes)       # first flush: right after the probe, before learning
         current = glyph_items(db, sample_glyph, keyfreq)
-        new_flag = not first_glyph_flush[0]
         items = []
         for key, it in current.items():
             sig = (it["label"], it["style"])
             if shown.get(key) != sig:
                 shown[key] = sig
-                items.append({**it, "new": new_flag})
-        first_glyph_flush[0] = False
+                # "new" = a cluster this file created, not a jittered variant of a known letter
+                items.append({**it, "new": key not in start_shapes})
         pending = len(keyfreq) - len(current)
         if items:
             emit("glyphs", items=items, known=len(current), pending=pending)
