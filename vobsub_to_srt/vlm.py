@@ -204,7 +204,7 @@ class VLMClient:
     def __init__(self, cache_dir: Path | None = None, concurrency: int = 2,
                  base_url: str | None = None, api_key: str | None = None, model: str | None = None,
                  timeout: float = 60.0, max_attempts: int = 4, use_tool: bool = False,
-                 profile: str | None = None):
+                 profile: str | None = None, limiter=None):
         load_env()
         missing = [k for k in ENV_KEYS if not env(k)]
         if missing and not (base_url and api_key and model):
@@ -226,7 +226,9 @@ class VLMClient:
         self._mem: dict[str, str] = {}
         if cache_dir is not None:
             cache_dir.mkdir(parents=True, exist_ok=True)
-        self.limiter = AdaptiveLimiter(concurrency)
+        # request slots: this client's own adaptive limiter, or one shared across worker
+        # processes (pool.PipeLimiter) with the same acquire()/release(throttled) interface
+        self.limiter = limiter if limiter is not None else AdaptiveLimiter(concurrency)
         self.max_throttle_retries = 60
         self.timeout = timeout
         self.max_attempts = max_attempts

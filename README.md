@@ -115,6 +115,8 @@ The image `ghcr.io/n0ctu/vobsub-to-srt:latest` is built by CI from `main` (tags 
 
 The same image runs the web app: `docker compose up -d` starts it on the host port set in `compose.yml` (default `127.0.0.1:8787`; bind a private address if a reverse proxy on another host terminates TLS, and give it `client_max_body_size 80m`, `proxy_read_timeout 900s` and `proxy_buffering off`). Without Docker: `uv sync --extra web && uv run vobsub-to-srt-web`.
 
+Jobs run in `VTS_WORKERS` worker processes. The web process owns the queue and hands out the vision-model request slots, so the endpoint never sees more than `VTS_VLM_SLOTS` requests at once however many jobs run; waiting jobs are told their position every few seconds. Workers learn into the shared glyph memory concurrently: each save merges the job's learning into the file's current content under a file lock.
+
 Everything a user uploads stays in memory: uploads are dropped when their job ran, results are held in memory for `VTS_JOB_TTL` (10 min) so the browser can fetch them, the VLM cache is per job. Only the shared `glyph-memory/` grows. Limits and usage statistics live in `<data>/stats.sqlite`; clients are identified by a salted hash of their address whose salt changes daily.
 
 | Variable | Default | |
@@ -124,6 +126,8 @@ Everything a user uploads stays in memory: uploads are dropped when their job ra
 | `VTS_MAX_VLM_CUES` | 0 (off) | optional cap on VLM requests per job |
 | `VTS_MAX_CUES`, `VTS_MAX_SUB_MB`, `VTS_MAX_QUEUE` | 6000, 64, 20 | input and queue caps |
 | `VTS_JOB_TTL`, `VTS_JOB_TIMEOUT` | 600, 900 | seconds |
+| `VTS_WORKERS` | 2 | worker processes: jobs converted at the same time (one CPU core each) |
+| `VTS_VLM_SLOTS`, `VTS_VLM_SLOTS_PER_JOB` | 4, 2 | vision requests in flight: all jobs together, and per job |
 | `VTS_TRUST_PROXY` | 0 | `1` to take the client address from `X-Forwarded-For` (only behind your own proxy) |
 
 ## As a library / service

@@ -7,28 +7,16 @@ fastapi = pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 from vobsub_to_srt import web  # noqa: E402
-from vobsub_to_srt.job import JobResult  # noqa: E402
 
 IDX = b"# VobSub index\nsize: 720x576\nid: en, index: 0\n" + b"".join(
     f"timestamp: 00:00:{i:02d}:000, filepos: {i:09x}\n".encode() for i in range(5))
 
 
-def fake_run_job_sync(source, config, progress):
-    assert source.idx.startswith(b"# VobSub index") and isinstance(source.sub, bytes)   # in memory, no path
-    progress({"event": "probe", "db": "calm-sable-0000", "mode": "exact", "coverage": 1.0})
-    progress({"event": "cues", "items": [{"i": 0, "start": 0, "end": 1000, "text": "Hello", "src": "nocr"}], "resolved": 1})
-    progress({"event": "glyphs", "items": [{"key": "k1", "label": "H", "w": 4, "h": 5, "bits": "8A==", "n": 3,
-                                            "style": "", "new": False}], "known": 1, "pending": 0})
-    progress({"event": "done", "unresolved": 0, "seconds": 0.1})
-    return JobResult(srt="1\n00:00:00,000 --> 00:00:01,000\nHello\n",
-                     report={"by_source": {"nocr": 4, "vlm": 1}, "cues": 5, "vlm_requests": 3, "seconds": 0.1, "language": "en"},
-                     unresolved=0, vlm_used=3, budget_exhausted=False)
-
-
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(web, "DATA", tmp_path)
-    monkeypatch.setattr(web.jobmod, "run_job_sync", fake_run_job_sync)
+    monkeypatch.setattr(web, "POOL_ENTRY", "fake_entry:run_job")     # runs in a real worker process
+    monkeypatch.setattr(web, "WORKERS", 1)
     web.jobs.clear()
     with TestClient(web.app) as c:
         yield c
@@ -39,7 +27,7 @@ def submit(client, idx=IDX, idx_name="movie.idx", sub_name="movie.sub"):
 
 
 def wait_done(client, job_id):
-    for _ in range(100):
+    for _ in range(400):
         j = client.get(f"/api/jobs/{job_id}").json()
         if j["status"] in ("done", "error"):
             return j
@@ -83,13 +71,10 @@ def test_job_rate_limit(client, monkeypatch):
 def test_daily_vlm_allowance_reduces_budget(client, monkeypatch):
     monkeypatch.setattr(web, "VLM_PER_DAY", 5)
     seen = []
-
-    def spy(source, config, progress):
-        seen.append(config.max_vlm_cues)
-        return fake_run_job_sync(source, config, progress)
-    monkeypatch.setattr(web.jobmod, "run_job_sync", spy)
-    wait_done(client, submit(client).json()["id"])          # uses 3 of 5
-    wait_done(client, submit(client).json()["id"])          # 2 left
+    for _ in range(2):                                      # the first uses 3 of 5, the second gets 2
+        job_id = submit(client).json()["id"]
+        wait_done(client, job_id)
+        seen.append(client.get(f"/api/jobs/{job_id}/report").json()["max_vlm_cues"])
     assert seen == [5, 2]
 
 
@@ -137,17 +122,10 @@ def test_limits_persist_across_restart(client, monkeypatch):
 
 
 def test_waiting_jobs_learn_their_position(client, monkeypatch):
-    import time as _time
-
-    def slow(source, config, progress):
-        progress({"event": "cues", "items": [], "resolved": 2, "cues": 5, "round": 1})
-        _time.sleep(1.2)
-        return fake_run_job_sync(source, config, progress)
-    monkeypatch.setattr(web.jobmod, "run_job_sync", slow)
     monkeypatch.setattr(web, "QUEUE_PUSH_EVERY", 0.1)
     ids = []
-    for _ in range(2):
-        r = client.post("/api/jobs", files={"idx": ("a.idx", IDX), "sub": ("a.sub", b"\0" * 64)})
+    for name in ("slow.idx", "second.idx"):                 # the stand-in sleeps 1.2 s for "slow*"
+        r = client.post("/api/jobs", files={"idx": (name, IDX), "sub": ("a.sub", b"\0" * 64)})
         assert r.status_code == 200, r.text
         ids.append(r.json()["id"])
     events = [json.loads(l[6:]) for l in client.get(f"/api/jobs/{ids[1]}/events").text.splitlines() if l.startswith("data: ")]

@@ -59,7 +59,7 @@ def _source(source: Path | VobSubData | str) -> VobSubData:
 
 
 async def run_job(source: Path | VobSubData | str, config: JobConfig = JobConfig(),
-                  progress: Callable[[dict], None] | None = None) -> JobResult:
+                  progress: Callable[[dict], None] | None = None, limiter=None) -> JobResult:
     """Convert one .idx/.sub pair. Raises on unreadable input; a missing VLM endpoint is not an error
     (the job runs teacher-less)."""
     data = _source(source)
@@ -73,7 +73,7 @@ async def run_job(source: Path | VobSubData | str, config: JobConfig = JobConfig
     explicit = bool(config.base_url and config.api_key and config.model)
     if explicit or endpoint_configured():
         async with VLMClient(cache_dir=None, concurrency=config.concurrency, base_url=config.base_url,
-                             api_key=config.api_key, model=config.model) as client:
+                             api_key=config.api_key, model=config.model, limiter=limiter) as client:
             res = await process_file(data, client, opts)
     else:
         opts.mode = "nocr-only"

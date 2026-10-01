@@ -380,10 +380,8 @@ def learn_cue(db: GlyphDB, lines: list[Line], vlm_text: str, gap_threshold: floa
     aligns, reason = align_cue(db, lines, vlm_text, gap_threshold)
     if aligns is None:
         return LearnResult(False, reason)
-    if source is not None:
-        if source in db.learned_sources:
-            return LearnResult(False, ALREADY_LEARNED, alignments=aligns)
-        db.learned_sources.add(source)
+    if source is not None and not db.learn_source(source):
+        return LearnResult(False, ALREADY_LEARNED, alignments=aligns)
     conflicts = []
     seen: set[tuple] = set()      # one vote per (glyph, label) per cue: votes must be independent
     for line, a in zip(lines, aligns):

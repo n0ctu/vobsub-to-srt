@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 from vobsub_to_srt.align import align_line, learn_cue, otsu_threshold, parse_styled, strip_tags
-from vobsub_to_srt.glyphdb import GlyphDB
+from vobsub_to_srt.glyphdb import GlyphDB, trusted_label
 from vobsub_to_srt.recognize import recognize
 from vobsub_to_srt.segment import segment, split_lines
 from vobsub_to_srt.srt import fmt_ts, normalize_text
@@ -485,3 +485,30 @@ def test_vlm_batch_groups_apply_in_order():
     asyncio.run(_vlm_batch(batch, None, lambda st, r, src: applied.append((st.cue.index, r)), {}, "vlm",
                            group=2, call_group=call_group))
     assert applied == [(i, f"t{i}") for i in range(5)]
+
+
+def test_concurrent_copies_merge_on_save(tmp_path):
+    """Two workers learn into the same glyph set at once: the second save merges instead of
+    overwriting, and evidence from an image the other copy already learned counts once."""
+    from vobsub_to_srt.glyphdb import GlyphDB
+    path = tmp_path / "gm" / "t.json"
+    base = GlyphDB("t", path)
+    base.attach_private(tmp_path / "wm", False)
+    learn_cue(base, segment(render("ab")), "ab", 12, source="img-ab")
+    base.save()
+    a, b = GlyphDB.load(path), GlyphDB.load(path)
+    a.attach_private(tmp_path / "wm", False)
+    b.attach_private(tmp_path / "wm", False)
+    learn_cue(a, segment(render("cd")), "cd", 12, source="img-cd")
+    learn_cue(b, segment(render("ef")), "ef", 12, source="img-ef")
+    learn_cue(b, segment(render("cd")), "cd", 12, source="img-cd")     # the same image as a's
+    a.save()
+    b.save()
+    merged = GlyphDB.load(path)
+    merged.attach_private(tmp_path / "wm", False)
+    labels = {trusted_label(v.votes)[0] or max(v.votes, key=v.votes.get) for s in merged.shapes.values() for v in s.variants if v.votes}
+    assert {"a", "b", "c", "d", "e", "f"} <= labels
+    assert merged.learned_sources == {"img-ab", "img-cd", "img-ef"}
+    c_votes = [sum(v.votes.values()) for s in merged.shapes.values() for v in s.variants if max(v.votes, key=v.votes.get, default=None) == "c"]
+    assert c_votes == [1]                                                 # not doubled by b's replay
+    assert b.learned_sources == merged.learned_sources                    # b continues on the merged state

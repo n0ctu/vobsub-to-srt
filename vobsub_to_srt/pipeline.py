@@ -277,6 +277,7 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
     # only persisted together with real learning; a pure recognition run leaves the DB file untouched.
     prev_geo = {k: [list(v.geo_italic), list(v.geo_bold)] for k, sh in db.shapes.items() for v in sh.variants[:1]}
     file_geo, file_geo_b = dict(geo), dict(geo_b)      # this file's votes per glyph key
+    db.file_geo = (file_geo, file_geo_b)               # persisted with the next save (merged)
 
     def pooled_geo(key: str) -> tuple[list[int], list[int]]:
         """Geometry votes of a glyph's whole cluster: the DB's accumulated votes plus this file's

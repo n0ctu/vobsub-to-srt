@@ -2,8 +2,9 @@
 
 One process, no database, and nothing of a user's subtitles ever touches a disk: uploads are held
 in memory until their job ran, results are held in memory until VTS_JOB_TTL (10 min) old.
-A single worker converts jobs one after another (it is the only writer of the shared glyph memory and
-the global VLM throttle). Per-IP limits: jobs per hour and VLM requests per day; when a client's daily
+A few worker processes convert jobs concurrently (pool.WorkerPool); the orchestrator hands out the
+vision-model request slots (global ceiling, per-job cap) and the glyph memory merges concurrent
+learning on save. Per-IP limits: jobs per hour and VLM requests per day; when a client's daily
 VLM allowance is used up its jobs still run, teacher-less. A queue cap bounds memory use.
 
 Environment: VTS_DATA (default "."; glyph memory, word memory, dictionaries), VTS_JOB_TTL=600,
@@ -33,6 +34,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from . import job as jobmod
 from .job import JobConfig
 from .pipeline import VobSubData
+from .pool import WorkerPool
 from .names import random_db_name  # noqa: F401  (re-exported for the stats page)
 
 log = logging.getLogger("vobsub_to_srt.web")
@@ -53,6 +55,10 @@ MAX_CUES = _env_int("VTS_MAX_CUES", 6000)
 TRUST_PROXY = os.environ.get("VTS_TRUST_PROXY", "0") == "1"
 JOB_TIMEOUT = _env_int("VTS_JOB_TIMEOUT", 900)
 MAX_QUEUE = _env_int("VTS_MAX_QUEUE", 20)
+WORKERS = _env_int("VTS_WORKERS", 2)                  # worker processes (jobs converted at once)
+VLM_SLOTS = _env_int("VTS_VLM_SLOTS", 4)              # vision requests in flight, all jobs together
+VLM_SLOTS_PER_JOB = _env_int("VTS_VLM_SLOTS_PER_JOB", 2)
+POOL_ENTRY = "vobsub_to_srt.job:run_job"              # what a worker runs (tests substitute a stand-in)
 BASELINE_DIR = Path(os.environ.get("VTS_BASELINE_DIR", "/app/glyph-memory"))   # fonts shipped with the image
 
 STATIC = Path(__file__).parent / "static"
@@ -235,20 +241,25 @@ from contextlib import asynccontextmanager
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global queue, store
+    global queue, store, pool
     queue = asyncio.Queue()          # bound to this process's event loop
     jobs.clear()
     DATA.mkdir(parents=True, exist_ok=True)
     store = Store(DATA / "stats.sqlite")
-    tasks = [asyncio.create_task(worker()), asyncio.create_task(sweeper()), asyncio.create_task(queue_ticker())]
+    pool = WorkerPool(WORKERS, VLM_SLOTS, VLM_SLOTS_PER_JOB, POOL_ENTRY)
+    await pool.start()
+    tasks = [asyncio.create_task(worker()) for _ in range(WORKERS)]
+    tasks += [asyncio.create_task(sweeper()), asyncio.create_task(queue_ticker())]
     yield
     for t in tasks:
         t.cancel()
+    await pool.stop()
 
 
 app = FastAPI(title="vobsub-to-srt", docs_url=None, redoc_url=None, lifespan=lifespan)
 jobs: dict[str, Job] = {}
 queue: asyncio.Queue = None  # type: ignore[assignment]  # created in lifespan()
+pool: WorkerPool = None  # type: ignore[assignment]  # created in lifespan()
 store: Store = None  # type: ignore[assignment]  # opened in lifespan()
 
 
@@ -405,20 +416,18 @@ async def static_file(name: str):
 # ---------------------------------------------------------------- worker & housekeeping
 
 async def _run(job: Job) -> None:
-    loop = asyncio.get_running_loop()
     job.status = "running"
     job.push({"event": "started"})
     budget = store.vlm_left(job.ip) if MAX_VLM_CUES is None else min(MAX_VLM_CUES, store.vlm_left(job.ip))
     config = JobConfig(glyph_memory_dir=DATA / "glyph-memory", word_memory_dir=DATA / "word-memory",
                        dict_dir=DATA / "dictionaries", max_vlm_cues=budget)
 
-    def progress(e: dict) -> None:            # called from the worker thread
-        loop.call_soon_threadsafe(job.push, e)
-        loop.call_soon_threadsafe(_note_progress, job, e)
+    def progress(e: dict) -> None:            # events arrive on the event loop (pool pipe reader)
+        job.push(e)
+        _note_progress(job, e)
 
     try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(jobmod.run_job_sync, job.upload, config, progress), JOB_TIMEOUT)
+        result = await pool.run(job.upload, config, progress, timeout=JOB_TIMEOUT)
         job.result = result
         job.vlm_used = result.vlm_used
         store.add_vlm(job.ip, result.vlm_used)

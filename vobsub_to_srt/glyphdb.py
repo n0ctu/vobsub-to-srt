@@ -4,6 +4,11 @@ from __future__ import annotations
 import base64
 import json
 import os
+from contextlib import contextmanager
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - non-POSIX
+    fcntl = None
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -124,6 +129,29 @@ class Shape:
         return best
 
 
+class _Part:
+    """A glyph stand-in for journal replay (key, bits, top_rel)."""
+    __slots__ = ("key", "bits", "top_rel")
+
+    def __init__(self, key: str, bits: np.ndarray, top_rel: int):
+        self.key, self.bits, self.top_rel = key, bits, top_rel
+
+
+@contextmanager
+def _locked(path: Path):
+    """Exclusive file lock next to a DB file (advisory, POSIX); a no-op where unavailable."""
+    lock = path.with_suffix(".lock")
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    with open(lock, "w") as f:
+        if fcntl is not None:
+            fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(f, fcntl.LOCK_UN)
+
+
 class GlyphDB:
     def __init__(self, name: str, path: Path | None = None):
         self.name = name
@@ -155,6 +183,13 @@ class GlyphDB:
         self.private_path: Path | None = None
         self.word_memory = False
         self.charset = "simplified"          # labels folded by simplify.py, or "literal"
+        # Learning journal: every write since the last save, as (op, args). save() replays it onto
+        # the file's current content (another worker may have learned meanwhile), see save().
+        self.journal: list[tuple] | None = []
+        # this file's geometry votes per glyph key ([upright, italic], [regular, bold]), added to
+        # the file's accumulated votes on save (pipeline.apply_geo keeps the in-memory view)
+        self.file_geo: tuple[dict, dict] = ({}, {})
+        self._geo_credited: set[str] = set()   # clusters whose file geometry votes are already on disk
 
     @property
     def pos_tol(self) -> int:
@@ -259,10 +294,25 @@ class GlyphDB:
             self.dirty = True
         return shape
 
+    def _log(self, *op) -> None:
+        if self.journal is not None:
+            self.journal.append(op)
+
+    def learn_source(self, source: str) -> bool:
+        """Claim a cue image as learned; False if it already was (its votes are not independent)."""
+        if source in self.learned_sources:
+            return False
+        self.learned_sources.add(source)
+        self._log("source", source)
+        return True
+
     def join(self, key: str, bits: np.ndarray, top_rel: int, canonical_key: str) -> None:
         """Make a (new) shape a member of an existing shape's cluster, without voting."""
         if key in self.shapes:
             return
+        if canonical_key not in self.shapes:
+            return
+        self._log("join", key, bits, top_rel, canonical_key)
         canon = self.canonical(canonical_key)
         self.shapes[key] = Shape(key, bits.copy(), derived_from=canonical_key, cluster=canon)
         self.by_size[bits.shape].append(key)
@@ -282,8 +332,12 @@ class GlyphDB:
         if once is not None:
             tag = (canon.key, v.top_rel, label)
             if tag in once:
+                # no vote, but the shape (and its variant) now exist: the journal must create
+                # them too, or a replayed copy clusters later votes differently
+                self._log("touch", key, bits, top_rel, label, derived_from)
                 return canon.key
             once.add(tag)
+        self._log("vote", key, bits, top_rel, label, style, weight, derived_from)
         v.votes[label] += weight
         for f in "bi":
             v.styles.setdefault(f, [0, 0])[1 if f in style else 0] += weight
@@ -291,6 +345,7 @@ class GlyphDB:
         return canon.key
 
     def add_prior(self, key: str, bits: np.ndarray, top_rel: int, label: str, source: str) -> None:
+        self._log("prior", key, bits, top_rel, label, source)
         shape = self.place(key, bits, top_rel, label, source)
         self.shapes[shape.cluster].variant(top_rel, self.pos_tol, create=True).prior = label
         self.dirty = True
@@ -333,6 +388,7 @@ class GlyphDB:
     def add_sequence(self, glyphs, label: str) -> None:
         """The glyphs together spell `label`. Each part is stored (and clustered) without a label
         of its own, so jittered parts are recognised as the same sequence later."""
+        self._log("seq", [(g.key, g.bits, g.top_rel) for g in glyphs], label)
         for g in glyphs:
             self.place(g.key, g.bits, g.top_rel)
         self.sequences.setdefault(self.seq_key(glyphs), Counter())[label] += 1
@@ -341,10 +397,12 @@ class GlyphDB:
     def add_word(self, keys: list[str], text: str) -> None:
         if not self.word_memory:
             return
+        self._log("word", list(keys), text)
         self.words.setdefault("|".join(keys), Counter())[text] += 1
         self.dirty = True
 
     def add_gap(self, ka: str, kb: str, gap: int, is_space: bool, italic: bool) -> None:
+        self._log("gap", ka, kb, gap, is_space, italic)
         self.gaps["1" if italic else "0"][gap][1 if is_space else 0] += 1
         self.pair_gaps[f"{self.canonical(ka)}|{self.canonical(kb)}|{gap}"][1 if is_space else 0] += 1
         self.dirty = True
@@ -514,10 +572,93 @@ class GlyphDB:
         if not word_memory:
             self.words = {}
 
+    def replay(self, ops: list[tuple]) -> None:
+        """Apply another copy's learning journal. Votes, sequences and gaps of a cue image this
+        copy already learned from are skipped (evidence per image counts once)."""
+        saved, self.journal = self.journal, None
+        skip = False
+        try:
+            for op in ops:
+                kind = op[0]
+                if kind == "source":
+                    skip = not self.learn_source(op[1])
+                elif kind in ("vote", "seq", "gap") and skip:
+                    continue
+                elif kind == "vote":
+                    _, key, bits, top_rel, label, style, weight, derived_from = op
+                    self.add_vote(key, bits, top_rel, label, style, weight, derived_from)
+                elif kind == "touch":
+                    _, key, bits, top_rel, label, derived_from = op
+                    shape = self.place(key, bits, top_rel, label, derived_from)
+                    self.shapes[shape.cluster].variant(top_rel, self.pos_tol, create=True)
+                elif kind == "seq":
+                    self.add_sequence([_Part(k, b, t) for k, b, t in op[1]], op[2])
+                elif kind == "gap":
+                    self.add_gap(*op[1:])
+                elif kind == "prior":
+                    self.add_prior(*op[1:])
+                elif kind == "join":
+                    self.join(*op[1:])
+                elif kind == "word":
+                    self.add_word(*op[1:])
+        finally:
+            self.journal = saved
+
+    def apply_file_geo(self, file_geo: dict, file_geo_b: dict, credited: set[str]) -> None:
+        """Add one file's geometry votes to the accumulated votes (pooled per cluster). Clusters in
+        `credited` got them at an earlier save; the ones credited now are added to the set, so a
+        shape learned later in the run still receives the file's votes exactly once."""
+        members: dict[str, list[str]] = {}
+        for k in set(file_geo) | set(file_geo_b):
+            if k in self.shapes:
+                members.setdefault(self.canonical(k), []).append(k)
+        for canon, keys in members.items():
+            if canon in credited:
+                continue
+            credited.add(canon)
+            gi, gb = [0, 0], [0, 0]
+            for k in keys:
+                fi, fb = file_geo.get(k, [0, 0]), file_geo_b.get(k, [0, 0])
+                gi[0] += fi[0]; gi[1] += fi[1]; gb[0] += fb[0]; gb[1] += fb[1]
+            for v in self.shapes[canon].variants:
+                v.geo_italic = [v.geo_italic[0] + gi[0], v.geo_italic[1] + gi[1]]
+                v.geo_bold = [v.geo_bold[0] + gb[0], v.geo_bold[1] + gb[1]]
+        self.dirty = True
+
+    def _adopt(self, other: "GlyphDB") -> None:
+        """Continue with another copy's state (after merging into it)."""
+        keep = {"journal", "path", "private_path", "word_memory", "file_geo", "_geo_credited"}
+        for k, v in other.__dict__.items():
+            if k not in keep:
+                setattr(self, k, v)
+        self._bearings = None
+        self._seq_n = -1
+
     def save(self, path: Path | None = None) -> None:
+        """Write the DB. If the file exists, this copy's learning is merged into the file's current
+        content under a file lock: several workers may learn into the same glyph set at once, each
+        replaying its journal onto what the others wrote (all writes are additive counters)."""
         path = path or self.path
-        self.update_unit()
         assert path is not None
+        with _locked(path):
+            if path.exists() and self.journal is not None:
+                other = GlyphDB.load(path)
+                if self.private_path is not None:
+                    other.attach_private(self.private_path.parent, self.word_memory)
+                other.replay(self.journal)
+                other.apply_file_geo(*self.file_geo, self._geo_credited)
+                other._write(path)
+                self._adopt(other)
+            else:
+                # first write of a new DB: the in-memory variants already carry this file's votes
+                # (pipeline.apply_geo), so every cluster present now counts as credited
+                self._geo_credited |= {self.canonical(k) for k in set(self.file_geo[0]) | set(self.file_geo[1])
+                                       if k in self.shapes}
+                self._write(path)
+        self.journal = [] if self.journal is not None else None
+
+    def _write(self, path: Path) -> None:
+        self.update_unit()
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.to_json(), ensure_ascii=False), encoding="utf-8")
