@@ -72,6 +72,7 @@ class Job:
     result: jobmod.JobResult | None = None
     error: str | None = None
     vlm_used: int = 0
+    snap: dict = field(default_factory=dict)   # latest progress (cues, resolved, round) for the queue view
 
     def push(self, event: dict) -> None:
         event = {k: v for k, v in event.items() if k not in ("srt", "db")}   # no server paths / DB names
@@ -239,7 +240,7 @@ async def lifespan(app: FastAPI):
     jobs.clear()
     DATA.mkdir(parents=True, exist_ok=True)
     store = Store(DATA / "stats.sqlite")
-    tasks = [asyncio.create_task(worker()), asyncio.create_task(sweeper())]
+    tasks = [asyncio.create_task(worker()), asyncio.create_task(sweeper()), asyncio.create_task(queue_ticker())]
     yield
     for t in tasks:
         t.cancel()
@@ -413,6 +414,7 @@ async def _run(job: Job) -> None:
 
     def progress(e: dict) -> None:            # called from the worker thread
         loop.call_soon_threadsafe(job.push, e)
+        loop.call_soon_threadsafe(_note_progress, job, e)
 
     try:
         result = await asyncio.wait_for(
@@ -434,12 +436,48 @@ async def _run(job: Job) -> None:
         job.upload = None                                   # uploads never outlive the job
 
 
+QUEUE_PUSH_EVERY = 3.0        # seconds between queue updates to waiting jobs
+
+
+def _note_progress(job: Job, e: dict) -> None:
+    """Remember the running job's progress for the queue view."""
+    for k in ("cues", "resolved", "round"):
+        if e.get(k) is not None:
+            job.snap[k] = e[k]
+
+
+async def queue_ticker() -> None:
+    """Waiting jobs hear where they stand every few seconds, whether or not the running job emits
+    progress (a long vision round may be quiet)."""
+    last = time.monotonic()
+    while True:
+        await asyncio.sleep(min(QUEUE_PUSH_EVERY, 0.5))
+        if time.monotonic() - last >= QUEUE_PUSH_EVERY and any(j.status == "queued" for j in jobs.values()):
+            last = time.monotonic()
+            broadcast_queue()
+
+
+def broadcast_queue() -> None:
+    """Tell every waiting job where it stands: its position, how many jobs run ahead of it and how
+    far the running job is. Without this a waiting user sees a frozen page until their turn."""
+    running = [j for j in jobs.values() if j.status == "running"]
+    waiting = sorted((j for j in jobs.values() if j.status == "queued"), key=lambda j: j.created)
+    ahead = {"cues": sum(j.snap.get("cues", 0) for j in running),
+             "resolved": sum(j.snap.get("resolved", 0) for j in running),
+             "round": max((j.snap.get("round", 0) for j in running), default=0)} if running else None
+    for k, j in enumerate(waiting, 1):
+        j.push({"event": "queue", "position": k, "ahead": len(running) + k - 1, "running": ahead})
+
+
 async def worker() -> None:
     while True:
         job_id = await queue.get()
         job = jobs.get(job_id)
         if job:
+            job.status = "running"
+            broadcast_queue()
             await _run(job)
+            broadcast_queue()
         queue.task_done()
 
 

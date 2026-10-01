@@ -372,6 +372,7 @@ function finish(job, st) {
 
 /* ---------- log & progress ---------- */
 function say(st, line, visible) {
+  if (line == null) return;
   const t = st.start ? ((Date.now() - st.start) / 1000).toFixed(1).padStart(6) + 's  ' : '';
   st.log.push(t + line);
   if (visible) { const l = $('#log'); l.textContent += (l.textContent ? '\n' : '') + t + line; l.scrollTop = l.scrollHeight; }
@@ -379,6 +380,7 @@ function say(st, line, visible) {
 function describe(e) {
   switch (e.event) {
     case 'queued': return e.position > 1 ? `queued at position ${e.position}; ${e.cues} cues` : `queued; ${e.cues} cues`;
+    case 'queue': return null;   // shown in the progress line, not logged (it repeats every few seconds)
     case 'started': return 'started: decoding and segmenting the cues';
     case 'no_vlm': return 'this server has no vision model configured: unknown glyphs will be marked �';
     case 'probe':
@@ -400,6 +402,11 @@ function applyProgress(st, e) {
   if (e.vlm_used !== undefined) p.vlmUsed = e.vlm_used;
   if (e.vlm_budget !== undefined) p.vlmBudget = e.vlm_budget;
   if (e.event === 'queued') p.phase = e.position > 1 ? `queued at position ${e.position}` : 'queued';
+  if (e.event === 'queue') {
+    const r = e.running;
+    const ahead = e.ahead === 0 ? 'next in line' : `${e.ahead} job${e.ahead > 1 ? 's' : ''} ahead`;
+    p.phase = `waiting: ${ahead}` + (r && r.cues ? ` (converting ${r.resolved || 0} of ${r.cues} cues${r.round ? `, round ${r.round}` : ''})` : '');
+  }
   if (e.event === 'started') p.phase = 'starting';
   if (e.event === 'probe') p.phase = e.mode === 'exact' ? 'reading from memory' : 'learning the glyph set';
   if (e.event === 'round') { p.round = e.round; p.phase = `round ${e.round}: ${e.unresolved} cues still unresolved`; }

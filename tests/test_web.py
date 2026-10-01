@@ -134,3 +134,25 @@ def test_limits_persist_across_restart(client, monkeypatch):
     fresh = web.Store(web.DATA / "stats.sqlite")                                   # a new process
     assert fresh.check_job("testclient") is not None                              # still rate limited
     assert fresh.vlm_left("testclient") == web.VLM_PER_DAY - 3 or fresh.vlm_left("testclient") == web.VLM_PER_DAY
+
+
+def test_waiting_jobs_learn_their_position(client, monkeypatch):
+    import time as _time
+
+    def slow(source, config, progress):
+        progress({"event": "cues", "items": [], "resolved": 2, "cues": 5, "round": 1})
+        _time.sleep(1.2)
+        return fake_run_job_sync(source, config, progress)
+    monkeypatch.setattr(web.jobmod, "run_job_sync", slow)
+    monkeypatch.setattr(web, "QUEUE_PUSH_EVERY", 0.1)
+    ids = []
+    for _ in range(2):
+        r = client.post("/api/jobs", files={"idx": ("a.idx", IDX), "sub": ("a.sub", b"\0" * 64)})
+        assert r.status_code == 200, r.text
+        ids.append(r.json()["id"])
+    events = [json.loads(l[6:]) for l in client.get(f"/api/jobs/{ids[1]}/events").text.splitlines() if l.startswith("data: ")]
+    q = [e for e in events if e["event"] == "queue"]
+    assert q, [e["event"] for e in events]
+    assert q[0]["position"] == 1 and q[0]["ahead"] == 1 and q[0]["running"]["cues"] == 5
+    assert q[-1]["ahead"] == 0                      # the job ahead finished: next in line
+    assert events[-1]["event"] == "done"
