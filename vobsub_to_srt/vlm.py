@@ -16,7 +16,7 @@ import httpx
 import numpy as np
 from PIL import Image
 
-from .prompts import (PROMPT_VERSION, SUBMIT_TOOL, TRANSCRIBE_CONTEXT, TRANSCRIBE_STRICT_ADDENDUM,
+from .prompts import (PROMPT_VERSION, SUBMIT_TOOL, TRANSCRIBE_CONTEXT, TRANSCRIBE_SHEET_USER, TRANSCRIBE_STRICT_ADDENDUM,
                       TRANSCRIBE_SYSTEM, TRANSCRIBE_TOOL_ADDENDUM, TRANSCRIBE_USER)
 
 log = logging.getLogger(__name__)
@@ -54,6 +54,37 @@ def mask_to_png(mask: np.ndarray, scale: int = 2, pad: int = 8) -> bytes:
     buf = io.BytesIO()
     im.save(buf, "PNG", optimize=True)
     return buf.getvalue()
+
+
+def sheet_png(masks: list[np.ndarray], scale: int = 2, pad: int = 8, bar: int = 4) -> bytes:
+    """Several cue masks stacked top to bottom (dark text on white), separated by thick black bars."""
+    width = max(m.shape[1] for m in masks) + 2 * pad
+    rows: list[np.ndarray] = []
+    for k, m in enumerate(masks):
+        if k:
+            rows.append(np.full((pad, width), 255, np.uint8))
+            rows.append(np.zeros((bar, width), np.uint8))
+            rows.append(np.full((pad, width), 255, np.uint8))
+        img = np.full((m.shape[0] + 2 * pad, width), 255, np.uint8)
+        img[pad:pad + m.shape[0], pad:pad + m.shape[1]][m] = 0
+        rows.append(img)
+    im = Image.fromarray(np.vstack(rows))
+    if scale != 1:
+        im = im.resize((im.width * scale, im.height * scale), Image.NEAREST)
+    buf = io.BytesIO()
+    im.save(buf, "PNG", optimize=True)
+    return buf.getvalue()
+
+
+_NUMBERED = re.compile(r"^\s*(?:\(?\d{1,2}[.):]|\d{1,2}\s*[-\u2013])\s+")
+
+
+def split_sheet(text: str, n: int) -> list[str] | None:
+    """The answer for a sheet: n transcriptions separated by empty lines (a leading number is
+    dropped). None when the count does not match (the caller splits by the glyphs instead)."""
+    parts = [pt.strip() for pt in re.split(r"\n\s*\n", text.strip()) if pt.strip()]
+    parts = [_NUMBERED.sub("", pt) for pt in parts]
+    return parts if len(parts) == n else None
 
 
 def _clean(text: str) -> str:
@@ -194,13 +225,17 @@ class VLMClient:
         return text
 
     async def transcribe_ex(self, png: bytes, n_lines: int, lang: str = "en", strict: bool = False,
-                            context: list[str] | None = None) -> tuple[str, bool]:
-        """Like transcribe(); also returns whether the answer came from the cache (no API request)."""
+                            context: list[str] | None = None, sheet: int = 0) -> tuple[str, bool]:
+        """Like transcribe(); also returns whether the answer came from the cache (no API request).
+        `sheet` > 1: the image stacks that many cues (sheet_png); the answer holds all of them."""
         if self.profile == "ocr":
             user, context, system = OCR_USER, None, ""
         else:
             system = TRANSCRIBE_SYSTEM
-            user = TRANSCRIBE_USER.format(lang=LANG_NAMES.get(lang, lang), n=n_lines)
+            if sheet > 1:
+                user = TRANSCRIBE_SHEET_USER.format(lang=LANG_NAMES.get(lang, lang), n=sheet)
+            else:
+                user = TRANSCRIBE_USER.format(lang=LANG_NAMES.get(lang, lang), n=n_lines)
             if strict:
                 user += TRANSCRIBE_STRICT_ADDENDUM
             if self.use_tool:
@@ -227,6 +262,8 @@ class VLMClient:
         payload = {"model": self.model, "temperature": 0, "messages": messages}
         if self.profile == "ocr":
             payload["max_tokens"] = 400          # a derailed OCR model floods newlines
+        elif sheet > 1:
+            payload["max_tokens"] = 300 * sheet
         if self.use_tool:
             payload["tools"] = [SUBMIT_TOOL]
             payload["tool_choice"] = {"type": "function", "function": {"name": "submit_transcript"}}

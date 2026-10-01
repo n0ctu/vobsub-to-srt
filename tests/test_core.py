@@ -446,3 +446,42 @@ def test_reline_single_line_only_flattens():
     db = GlyphDB("t")
     lines = segment(render("Hello there"))
     assert reline(db, lines, "Hello\nthere", 12) == "Hello there"
+
+
+def test_sheet_png_and_split():
+    from vobsub_to_srt.vlm import sheet_png, split_sheet
+    from PIL import Image
+    import io
+    a, b = render("Hello"), render("World\nagain")
+    png = sheet_png([a, b], scale=1, pad=8, bar=4)
+    im = Image.open(io.BytesIO(png))
+    assert im.height == a.shape[0] + b.shape[0] + 4 * 8 + 4 + 2 * 8 and im.width == max(a.shape[1], b.shape[1]) + 16
+    assert split_sheet("Hello\n\nWorld\nagain", 2) == ["Hello", "World\nagain"]
+    assert split_sheet("1. Hello\n\n\n2) World again\n", 2) == ["Hello", "World again"]
+    assert split_sheet("Hello World again", 2) is None
+
+
+def test_reline_cues_splits_a_sheet_answer_by_the_glyphs():
+    from vobsub_to_srt.align import reline_cues
+    db = GlyphDB("t")
+    cues = [segment(render("Hello there")), segment(render("my friend\nagain"))]
+    assert reline_cues(db, cues, "Hello there my friend again", 12) == ["Hello there", "my friend\nagain"]
+    assert reline_cues(db, cues, "Hello", 12) is None
+
+
+def test_vlm_batch_groups_apply_in_order():
+    import asyncio
+    from vobsub_to_srt.pipeline import _vlm_batch
+
+    class St:
+        def __init__(self, i):
+            self.cue = type("C", (), {"index": i, "start_ms": 0})()
+    batch = [St(i) for i in range(5)]
+    applied = []
+
+    async def call_group(g):
+        await asyncio.sleep(0.01 * (3 - len(g)))
+        return [f"t{st.cue.index}" for st in g]
+    asyncio.run(_vlm_batch(batch, None, lambda st, r, src: applied.append((st.cue.index, r)), {}, "vlm",
+                           group=2, call_group=call_group))
+    assert applied == [(i, f"t{i}") for i in range(5)]

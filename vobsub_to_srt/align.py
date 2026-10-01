@@ -279,57 +279,96 @@ def reline(db: GlyphDB, lines: list[Line], vlm_text: str, gap_threshold: float) 
     the line (+- RELINE_TOL), the split with the lowest alignment cost wins; with no fitting word
     boundary any character position is a candidate (the VLM merged two words across the break).
     If nothing aligns, the split closest to the glyph count is used."""
-    styled = flatten(vlm_text)
-    while styled and styled[0][0] == " ":
-        styled.pop(0)
-    if len(lines) <= 1 or not styled:
-        return render_styled(styled)
-    counts = [len(l.glyphs) for l in lines]
-
-    def solve(chars: list[tuple[str, str]], k: int) -> tuple[float, list[list[tuple[str, str]]]]:
-        if k == len(lines) - 1:
-            a = align_line(db, lines[k], chars, gap_threshold) if chars else None
-            return (a.cost if a else INF), [chars]
-        want = counts[k]
-        n_total = sum(1 for c, _ in chars if c != " ")
-        cands: list[tuple[int, int]] = []     # (split index, |count - want|)
-        n = 0
-        for idx, (c, _) in enumerate(chars):
-            if c == " ":
-                if abs(n - want) <= RELINE_TOL and n_total - n >= 1:
-                    cands.append((idx, abs(n - want)))
-            else:
-                n += 1
-        if not cands:                          # no word boundary fits: split inside a word
-            n = 0
-            for idx, (c, _) in enumerate(chars):
-                if c != " ":
-                    if 0 < idx and abs(n - want) <= RELINE_TOL and n_total - n >= 1:
-                        cands.append((idx, abs(n - want)))
-                    n += 1
-        best: tuple[float, int, list] | None = None
-        for idx, dev in cands:
-            left = chars[:idx]
-            right = chars[idx:]
-            while right and right[0][0] == " ":
-                right = right[1:]
-            while left and left[-1][0] == " ":
-                left = left[:-1]
-            if not left or not right:
-                continue
-            a = align_line(db, lines[k], left, gap_threshold)
-            cost = a.cost if a else INF
-            sub_cost, rest = solve(right, k + 1)
-            total = cost + sub_cost
-            key = (total, dev)
-            if best is None or key < (best[0], best[1]):
-                best = (total, dev, [left] + rest)
-        if best is None:
-            return INF, [chars] + [[] for _ in range(len(lines) - k - 1)]
-        return best[0], best[2]
-
-    _, parts = solve(styled, 0)
+    _, parts = reline_parts(db, lines, flatten(vlm_text), gap_threshold)
     return "\n".join(render_styled(pt) for pt in parts if pt)
+
+
+def reline_cues(db: GlyphDB, cues: list[list[Line]], vlm_text: str,
+                gap_threshold: float) -> list[str] | None:
+    """One VLM answer for several stacked cues: split it into one text per cue by the same rule
+    (every line of every cue takes its share of the text). None if some line did not align."""
+    lines = [l for c in cues for l in c]
+    cost, parts = reline_parts(db, lines, flatten(vlm_text), gap_threshold)
+    if cost == INF or len(parts) != len(lines):
+        return None
+    out, k = [], 0
+    for c in cues:
+        out.append("\n".join(render_styled(pt) for pt in parts[k:k + len(c)] if pt))
+        k += len(c)
+    return out
+
+
+def reline_parts(db: GlyphDB, lines: list[Line], styled: list[tuple[str, str]],
+                 gap_threshold: float) -> tuple[float, list[list[tuple[str, str]]]]:
+    """Split one styled character stream over the glyph lines (see reline): total alignment cost
+    and one part per line. Dynamic programme over (line, start position), memoised."""
+    while styled and styled[0][0] == " ":
+        styled = styled[1:]
+    n_lines = len(lines)
+    N = len(styled)
+    if n_lines == 0 or N == 0:
+        return INF, [[] for _ in lines]
+    if n_lines == 1:
+        a = align_line(db, lines[0], styled, gap_threshold)
+        return (a.cost if a else INF), [styled]
+    counts = [len(l.glyphs) for l in lines]
+    before = [0] * (N + 1)          # non-space characters before position idx
+    for idx, (c, _) in enumerate(styled):
+        before[idx + 1] = before[idx] + (c != " ")
+    memo: dict[tuple[int, int], tuple[float, list]] = {}
+
+    def trimmed(a: int, b: int) -> tuple[int, int]:
+        while a < b and styled[a][0] == " ":
+            a += 1
+        while b > a and styled[b - 1][0] == " ":
+            b -= 1
+        return a, b
+
+    def line_cost(k: int, a: int, b: int) -> float:
+        a, b = trimmed(a, b)
+        if a >= b:
+            return INF
+        al = align_line(db, lines[k], styled[a:b], gap_threshold)
+        return al.cost if al else INF
+
+    def solve(start: int, k: int) -> tuple[float, list]:
+        hit = memo.get((start, k))
+        if hit is not None:
+            return hit
+        if k == n_lines - 1:
+            a, b = trimmed(start, N)
+            res = (line_cost(k, a, b), [styled[a:b]])
+            memo[(start, k)] = res
+            return res
+        want = counts[k]
+        cands: list[tuple[int, int, int]] = []     # (end of left part, start of right part, deviation)
+        for idx in range(start + 1, N):
+            n = before[idx] - before[start]
+            if abs(n - want) <= RELINE_TOL and before[N] - before[idx] >= 1 and styled[idx][0] == " ":
+                cands.append((idx, idx + 1, abs(n - want)))
+        if not cands:                              # no word boundary fits: split inside a word
+            for idx in range(start + 1, N):
+                n = before[idx] - before[start]
+                if abs(n - want) <= RELINE_TOL and before[N] - before[idx] >= 1 and styled[idx][0] != " ":
+                    cands.append((idx, idx, abs(n - want)))
+        best: tuple[tuple[float, int], list] | None = None
+        for end, nxt, dev in cands:
+            a, b = trimmed(start, end)
+            if a >= b:
+                continue
+            sub_cost, rest = solve(nxt, k + 1)
+            total = line_cost(k, a, b) + sub_cost
+            if best is None or (total, dev) < best[0]:
+                best = ((total, dev), [styled[a:b]] + rest)
+        if best is None:
+            a, b = trimmed(start, N)
+            res = (INF, [styled[a:b]] + [[] for _ in range(n_lines - k - 1)])
+        else:
+            res = (best[0][0], best[1])
+        memo[(start, k)] = res
+        return res
+
+    return solve(0, 0)
 
 
 ALREADY_LEARNED = "already learned from this image"

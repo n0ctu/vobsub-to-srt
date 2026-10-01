@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .align import ALREADY_LEARNED, align_cue, learn_cue, otsu_threshold, reline, restyle, strip_tags
+from .align import ALREADY_LEARNED, align_cue, learn_cue, otsu_threshold, reline, reline_cues, restyle, strip_tags
 from . import transfer
 from .glyphdb import GlyphDB, combine_style
 from .lexicon import make_lexicon
@@ -24,7 +24,7 @@ from .simplify import CHARSET_LITERAL, CHARSET_SIMPLIFIED, simplify
 from .recognize import CueResult, near_match, recognize, _decide
 from .segment import Line, bold_votes, fill_mask, italic_votes, segment
 from .srt import fmt_ts, normalize_text, render_srt
-from .vlm import VLMClient, mask_to_png
+from .vlm import VLMClient, mask_to_png, sheet_png, split_sheet
 from .vobsub import Cue, load_vobsub, load_vobsub_bytes
 
 log = logging.getLogger("vobsub_to_srt")
@@ -51,6 +51,7 @@ class Options:
     debug_dir: Path | None = None        # PNGs of cues that could not be read (diagnostics)
     diagnostics: bool = False            # keep raw VLM answers in the report
     batch_size: int = 16
+    sheet: int = 1                       # cues per VLM request, stacked into one image (1 = off)
     mode: str = "hybrid"                 # hybrid | vlm-only | nocr-only
     train_until: float = 0.01            # stop "training" when unknown glyph occurrences < this share
     min_probe_coverage: float = 0.5
@@ -344,6 +345,42 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
         vlm_raw[st.cue.index] = text
         return relined(st, text)
 
+    async def vlm_sheet(group: list[CueState]) -> list[str]:
+        """One request for several cues stacked into one image. Cues with an accepted answer are
+        served from the cache; the sheet answer is split by empty lines, else by the glyphs; if
+        neither works the cues are asked one by one."""
+        results: dict[int, str] = {}
+        todo: list[CueState] = []
+        for st in group:
+            acc = client.cache_get(accepted_key(st))
+            if acc is not None:
+                client.cache_hits += 1
+                vlm_raw[st.cue.index] = acc
+                results[st.cue.index] = relined(st, acc)
+            else:
+                todo.append(st)
+        if len(todo) == 1:
+            results[todo[0].cue.index] = await vlm_cue(todo[0])
+        elif todo:
+            png = sheet_png([st.mask for st in todo], scale=2)
+            text, cached = await client.transcribe_ex(png, 0, lang, sheet=len(todo),
+                                                      context=history(todo[0]) if opts.context else None)
+            if not cached:
+                budget["used"] += 1
+            parts = split_sheet(fold(text), len(todo))
+            if parts is None:
+                parts = reline_cues(db, [st.lines for st in todo], fold(text), gap_t)
+                stats["sheet_split_by_glyphs" if parts else "sheet_unsplittable"] += 1
+            if parts is None:
+                answers = await asyncio.gather(*(vlm_cue(st) for st in todo))
+                for st, a in zip(todo, answers):
+                    results[st.cue.index] = a
+            else:
+                for st, pt in zip(todo, parts):
+                    vlm_raw[st.cue.index] = pt
+                    results[st.cue.index] = relined(st, pt)
+        return [results[st.cue.index] for st in group]
+
     def relined(st: CueState, text: str) -> str:
         """The VLM's line breaks are not trusted: the image's lines decide (align.reline)."""
         text = fold(text)
@@ -428,8 +465,10 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
                 await _vlm_batch(todo, lambda s_: vlm_cue(s_, strict=True), apply_vlm, failures, "vlm-strict",
                                  **hooks("requery"))
 
+    sheet_kw = {"group": opts.sheet, "call_group": vlm_sheet} if opts.sheet > 1 and client is not None and client.profile == "chat" else {}
+
     if opts.mode == "vlm-only":
-        await _vlm_batch(states, vlm_cue, apply_vlm, failures, "vlm", **hooks("inference"))
+        await _vlm_batch(states, vlm_cue, apply_vlm, failures, "vlm", **hooks("inference"), **sheet_kw)
     else:
         rounds = 0
         for recheck in range(4):
@@ -467,7 +506,7 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
                 emit("round", round=rounds, phase=phase, unresolved=len(unresolved), batch=len(batch))
                 log.info("round %d [%s]: %d unresolved cues, unknown glyphs %.2f%% -> VLM on %d cues",
                          rounds, phase, len(unresolved), 100 * unk_share, len(batch))
-                await _vlm_batch(batch, vlm_cue, apply_vlm, failures, "vlm", **hooks(phase))
+                await _vlm_batch(batch, vlm_cue, apply_vlm, failures, "vlm", **hooks(phase), **sheet_kw)
                 await requery_misfits()
                 flush_cues()
                 flush_glyphs()
@@ -621,14 +660,23 @@ def _select_batch(db: GlyphDB, unresolved: list[CueState], keyfreq: Counter, siz
 
 
 async def _vlm_batch(batch, call, apply, failures: dict[int, str], source: str,
-                     on_progress=None, on_apply=None) -> None:
+                     on_progress=None, on_apply=None, group: int = 1, call_group=None) -> None:
     """Ask the VLM about every cue of the batch concurrently and apply the answers in batch order.
 
     The order matters: applying learns into the glyph memory, and applying in a fixed order is what
     keeps re-runs deterministic. Answers are still applied as early as possible (each one as soon as
     it and all its predecessors are in), so callers can stream progress: `on_progress(k, n)` runs
     when k of n requests have been answered, `on_apply()` after each applied answer."""
-    tasks = [asyncio.ensure_future(call(st)) for st in batch]
+    if group > 1 and call_group is not None:
+        # sheets: one request per `group` consecutive cues, one answer list per request
+        groups = [batch[k:k + group] for k in range(0, len(batch), group)]
+        gtasks = [asyncio.ensure_future(call_group(g)) for g in groups]
+
+        async def _nth(gt, i: int):
+            return (await gt)[i]
+        tasks = [asyncio.ensure_future(_nth(gt, i)) for g, gt in zip(groups, gtasks) for i in range(len(g))]
+    else:
+        tasks = [asyncio.ensure_future(call(st)) for st in batch]
     answered = 0
 
     def _done(_task) -> None:

@@ -23,6 +23,12 @@ TRANSCRIBE_SYSTEM = (
 
 TRANSCRIBE_USER = "Subtitle image from a {lang} video with {n} text line(s). Transcribe it literally."
 
+TRANSCRIBE_SHEET_USER = (
+    "This image stacks {n} subtitle images from a {lang} video, top to bottom, separated by thick "
+    "horizontal bars. Transcribe each subtitle literally. Output the {n} transcriptions in the same "
+    "order, separated by one empty line. Do not number them and do not transcribe the bars."
+)
+
 TRANSCRIBE_STRICT_ADDENDUM = (
     " Look at each character individually: distinguish I (capital i) from l (lowercase L) and 1, "
     "0 from O, rn from m, and include every punctuation mark."
