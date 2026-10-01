@@ -32,6 +32,8 @@ OVERRIDE_SHARE = 0.75
 CLUSTER_TOL = 0.12
 STRICT_TOL = 0.05       # for strict glyphs: an i differs from an l by its dot gap, ~0.1 of the ink
 CLUSTER_MARGIN = 0.06     # lead over the nearest shape with a different label
+TOLERANT_TOL = 0.05       # edge-tolerant difference accepted as "the same glyph, jittered" (recognize.near_match stage 2)
+TOLERANT_MARGIN = 0.03    # ... unless another label's shape is nearly as close
 MIN_MEMBER_SEEN = 2       # a jitter member seen once is not kept (rescaled tracks: thousands per file)
 MAX_MEMBERS = 24          # most frequent members kept per cluster; the rest is read via the near search
 STRICT = set("Il|i1!jíìïî")   # punctuation is told apart by size and baseline position instead
@@ -132,6 +134,33 @@ class Shape:
         return best
 
 
+_TOPO: dict[str, tuple[int, int]] = {}
+
+
+def topology(key: str, bits: np.ndarray) -> tuple[int, int]:
+    """(connected ink components, holes) of a glyph: a one-pixel jitter rarely changes them, a
+    missing stroke or a gap does (l vs !, c vs e, o vs c). Cached per bitmap key."""
+    hit = _TOPO.get(key)
+    if hit is None:
+        from scipy import ndimage
+        comps = int(ndimage.label(bits, structure=np.ones((3, 3), int))[1])
+        bg = ndimage.label(~np.pad(bits, 1))[1]          # 4-connected background regions
+        hit = _TOPO[key] = (comps, max(0, int(bg) - 1))
+        if len(_TOPO) > 200000:
+            _TOPO.clear()
+    return hit
+
+
+def _dilate(stack: np.ndarray) -> np.ndarray:
+    """3x3 dilation of a stack of bitmaps (n, h, w), with a one-pixel border added."""
+    n, h, w = stack.shape
+    out = np.zeros((n, h + 2, w + 2), bool)
+    for dy in (0, 1, 2):
+        for dx in (0, 1, 2):
+            out[:, dy:dy + h, dx:dx + w] |= stack
+    return out
+
+
 class _Part:
     """A glyph stand-in for journal replay (key, bits, top_rel)."""
     __slots__ = ("key", "bits", "top_rel")
@@ -170,6 +199,7 @@ class GlyphDB:
         self.words: dict[str, Counter] = {}
         self.by_size: dict[tuple[int, int], list[str]] = defaultdict(list)
         self._stacks: dict[tuple[int, int], tuple[list[str], np.ndarray]] = {}   # bucket -> (keys, bits)
+        self._tstacks: dict[tuple[int, int], tuple[list[str], np.ndarray, np.ndarray]] = {}   # + dilated bits
         self._soft: dict[str, str] = {}           # soft_canonical cache, cleared when shapes are added
         self.dirty = False
         self._bearings: tuple | None = None   # fitted side-bearing model (cached)
@@ -195,6 +225,10 @@ class GlyphDB:
         self._geo_credited: set[str] = set()   # clusters whose file geometry votes are already on disk
         # this file's glyph occurrence counts per key (pipeline sets it); credited to Shape.n once
         self.file_counts: dict[str, int] = {}
+        # edge-tolerant matching (recognize.near_match stage 2) is only for rescaled tracks, whose
+        # jitter it is made for; a crisp track's exact bitmaps never need it (pipeline sets it)
+        self.tolerant = False
+        self._il_cache: tuple[int, bool] = (-1, False)
         self._counts_credited: set[str] = set()
         self.saved_this_run = False           # a final save (with pruning) follows any mid-run save
 
@@ -263,6 +297,49 @@ class GlyphDB:
         out.sort(key=lambda c: c[0])
         return out
 
+    def tolerant_candidates(self, bits: np.ndarray, max_ratio: float = TOLERANT_TOL) -> list[tuple[float, str, int]]:
+        """Like near_candidates, with an edge-tolerant difference: ink of one bitmap that lies within
+        one pixel of the other's ink does not count. A rescaled track moves edge pixels by one
+        (thousands of unique bitmaps per episode); under this measure they are the same glyph,
+        while letters that differ by a stroke (c/e, n/h) stay apart. Returns (ratio, key, dh)."""
+        h, w = bits.shape
+        out: list[tuple[float, str, int]] = []
+        na = int(bits.sum())
+        for dh in (-1, 0, 1):
+            for dw in (-1, 0, 1):
+                size = (h + dh, w + dw)
+                keys = self.by_size.get(size)
+                if not keys:
+                    continue
+                st = self._tstacks.get(size)
+                if st is None or len(st[0]) != len(keys):
+                    stack = np.stack([self.shapes[k].bits for k in keys])
+                    st = (list(keys), stack, _dilate(stack))
+                    self._tstacks[size] = st
+                skeys, stack, dstack = st
+                H, W = max(h, size[0]) + 4, max(w, size[1]) + 4
+                A = np.zeros((H, W), bool)
+                A[2:2 + h, 2:2 + w] = bits
+                dA = _dilate(A[None])[0][1:-1, 1:-1]          # same canvas as A
+                nb = stack.reshape(len(skeys), -1).sum(axis=1)
+                best = None
+                for dy in (1, 2, 3):
+                    for dx in (1, 2, 3):
+                        if dy + size[0] > H or dx + size[1] > W:
+                            continue
+                        B = np.zeros((len(skeys), H, W), bool)
+                        B[:, dy:dy + size[0], dx:dx + size[1]] = stack
+                        dB = np.zeros((len(skeys), H, W), bool)
+                        dB[:, dy - 1:dy + size[0] + 1, dx - 1:dx + size[1] + 1] = dstack
+                        d = (A[None] & ~dB).reshape(len(skeys), -1).sum(axis=1) + \
+                            (B & ~dA[None]).reshape(len(skeys), -1).sum(axis=1)
+                        best = d if best is None else np.minimum(best, d)
+                ratios = best / np.maximum(1.0, (na + nb) / 2)
+                for i in np.nonzero(ratios <= max_ratio)[0]:
+                    out.append((float(ratios[i]), skeys[i], dh))
+        out.sort(key=lambda c: c[0])
+        return out
+
     def find_cluster(self, bits: np.ndarray, top_rel: int, label: str | None = None) -> str | None:
         """Canonical key of the cluster a new shape belongs to, or None if it starts its own.
         Same height only when the new label or the candidate's label is strict (I/l & co)."""
@@ -297,6 +374,7 @@ class GlyphDB:
             self.shapes[key] = shape
             self.by_size[bits.shape].append(key)
             self._stacks.pop(bits.shape, None)
+            self._tstacks.pop(bits.shape, None)
             self._soft.clear()
             self.dirty = True
         return shape
@@ -324,6 +402,7 @@ class GlyphDB:
         self.shapes[key] = Shape(key, bits.copy(), derived_from=canonical_key, cluster=canon)
         self.by_size[bits.shape].append(key)
         self._stacks.pop(bits.shape, None)
+        self._tstacks.pop(bits.shape, None)
         self._soft.clear()
         self.dirty = True
 
@@ -346,6 +425,8 @@ class GlyphDB:
             once.add(tag)
         self._log("vote", key, bits, top_rel, label, style, weight, derived_from)
         v.votes[label] += weight
+        if label in ("I", "l"):
+            self._il_cache = (-1, False)
         for f in "bi":
             v.styles.setdefault(f, [0, 0])[1 if f in style else 0] += weight
         self.dirty = True
@@ -469,8 +550,10 @@ class GlyphDB:
                 return True
         R, L, r_def, l_def, space_off = self.fit_bearings()
         if R is not None and space_off > 4:
-            known = (ka in R) + (kb in L)
-            r = gap - (R.get(ka, r_def) + L.get(kb, l_def))
+            # bearings are fitted per cluster: a jittered member shares its canonical's bearings
+            ca, cb = self.canonical(ka), self.canonical(kb)
+            known = (ca in R) + (cb in L)
+            r = gap - (R.get(ca, r_def) + L.get(cb, l_def))
             margin = max(2.0, (0.2 if known == 2 else 0.3) * space_off)
             if r < space_off / 2 - margin:
                 return False
@@ -634,6 +717,28 @@ class GlyphDB:
                 v.geo_bold = [v.geo_bold[0] + gb[0], v.geo_bold[1] + gb[1]]
         self.dirty = True
 
+    @property
+    def il_identical(self) -> bool:
+        """The font draws I and l alike: some cluster carries confirmed votes for both. Then a
+        cluster voted 'l' alone cannot be trusted to be an l either (recognize._decide)."""
+        n = len(self.shapes)
+        if self._il_cache[0] != n:
+            hit = any(v.votes.get("I", 0) >= 2 and v.votes.get("l", 0) >= 2
+                      for sh in self.shapes.values() for v in sh.variants)
+            if not hit:
+                # separate clusters (a one-pixel width jitter apart) voted I and l respectively,
+                # at the same height: the font draws them alike
+                sizes = {"I": set(), "l": set()}
+                for sh in self.shapes.values():
+                    for v in sh.variants:
+                        lab = trusted_label(v.votes)[0]
+                        if lab in sizes:
+                            sizes[lab].add(sh.bits.shape)
+                hit = any(abs(hi - hl) <= 1 and abs(wi - wl) <= 1
+                          for hi, wi in sizes["I"] for hl, wl in sizes["l"])
+            self._il_cache = (n, hit)
+        return self._il_cache[1]
+
     def credit_counts(self, counts: dict[str, int], credited: set[str]) -> None:
         """Add one file's glyph occurrences to Shape.n, each key once per run (a shape starts at 1)."""
         for k, n in counts.items():
@@ -661,6 +766,7 @@ class GlyphDB:
             if bucket and k in bucket:
                 bucket.remove(k)
             self._stacks.pop(sh.bits.shape, None)
+            self._tstacks.pop(sh.bits.shape, None)
         if drop:
             self._soft.clear()
             self.dirty = True
@@ -669,7 +775,7 @@ class GlyphDB:
     def _adopt(self, other: "GlyphDB") -> None:
         """Continue with another copy's state (after merging into it)."""
         keep = {"journal", "path", "private_path", "word_memory", "file_geo", "_geo_credited",
-                "file_counts", "_counts_credited", "saved_this_run"}
+                "file_counts", "_counts_credited", "saved_this_run", "tolerant"}
         for k, v in other.__dict__.items():
             if k not in keep:
                 setattr(self, k, v)

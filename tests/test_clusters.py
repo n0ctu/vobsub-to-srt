@@ -1,7 +1,7 @@
 """Cluster-pooled votes: jittered variants of one letter share their evidence."""
 import numpy as np
 
-from vobsub_to_srt.glyphdb import MIN_VOTES, GlyphDB, trusted_label
+from vobsub_to_srt.glyphdb import MIN_VOTES, GlyphDB, diff_ratio, trusted_label
 from vobsub_to_srt.recognize import _decide, near_match
 from vobsub_to_srt.segment import Glyph, glyph_key
 
@@ -86,3 +86,44 @@ def test_cluster_survives_save_and_load(tmp_path):
     assert sum(db2.lookup(glyph_key(a), g.top_rel).votes.values()) == 2
     v = db2.lookup(db2.find_cluster(b, g.top_rel, "e"), g.top_rel)       # read through the cluster
     assert trusted_label(v.votes)[0] == "e"
+
+
+def test_edge_jitter_is_read_through_the_tolerant_stage():
+    """A rescaled track moves edge pixels by one: the pixel difference of a small letter exceeds
+    the tolerance, the edge-tolerant stage still reads it; a different letter is not matched."""
+    import numpy as np
+    from vobsub_to_srt.recognize import near_match
+    db = GlyphDB("t")
+    db.tolerant = True                       # as the pipeline sets it for a rescaled track
+    gc = segment(render("c", size=22))[0].glyphs[0]
+    ge = segment(render("e", size=22))[0].glyphs[0]
+    db.add_vote(gc.key, gc.bits, gc.top_rel, "c", "", once=set())
+    db.add_vote(gc.key + "2", gc.bits, gc.top_rel, "c", "", once=set())
+    # jitter: grow every edge on the left half by one pixel
+    j = gc.bits.copy()
+    half = j.shape[1] // 2
+    j[:, :half] |= np.roll(gc.bits, 1, axis=0)[:, :half] | np.roll(gc.bits, 1, axis=1)[:, :half]
+    jit = type(gc)(gc.x, gc.y, j, gc.top_rel, glyph_key(j))
+    assert diff_ratio(j, gc.bits) > 0.12                      # the pixel measure rejects it
+    key, v, ratio = near_match(db, jit)
+    assert v is not None and trusted_label(v.votes)[0] == "c" and ratio <= 0.05
+    assert near_match(db, ge)[1] is None                      # 'e' is not a jittered 'c'
+
+
+def test_tolerant_stage_respects_slant_and_is_off_for_crisp_tracks():
+    import numpy as np
+    from vobsub_to_srt.recognize import near_match
+    db = GlyphDB("t")
+    gc = segment(render("c", size=22))[0].glyphs[0]
+    db.add_vote(gc.key, gc.bits, gc.top_rel, "c", "", once=set())
+    db.add_vote(gc.key + "2", gc.bits, gc.top_rel, "c", "", once=set())
+    j = gc.bits.copy(); half = j.shape[1] // 2
+    j[:, :half] |= np.roll(gc.bits, 1, axis=0)[:, :half] | np.roll(gc.bits, 1, axis=1)[:, :half]
+    jit = type(gc)(gc.x, gc.y, j, gc.top_rel, glyph_key(j))
+    assert near_match(db, jit)[1] is None                     # crisp track: stage 2 is off
+    db.tolerant = True
+    assert near_match(db, jit)[1] is not None
+    v = db.lookup(gc.key, gc.top_rel)
+    v.geo_italic = [0, 5]                                      # the cluster is italic ...
+    db.file_geo = ({jit.key: [4, 0]}, {})                      # ... this glyph's words are upright
+    assert near_match(db, jit)[1] is None

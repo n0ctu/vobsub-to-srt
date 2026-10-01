@@ -538,3 +538,18 @@ def test_jitter_members_are_pruned_on_save(tmp_path):
     reloaded = GlyphDB.load(tmp_path / "t.json")
     assert set(reloaded.shapes) == keys and reloaded.shapes["jit0"].n == 5
     assert sum(1 for s in reloaded.shapes.values() if s.cluster == canon and s.key != canon) <= MAX_MEMBERS
+
+
+def test_uncertain_spaces_are_filled_from_the_reference_reading():
+    from vobsub_to_srt.recognize import recognize
+    db = GlyphDB("t")
+    lines = segment(render("ab cd"))
+    for _ in range(2):
+        learn_cue(db, lines, "ab cd", 12)
+    res = recognize(db, lines, learn_near=False)
+    assert res.ok
+    res.lines[0].spaces[0] = None                       # make the a|b break uncertain
+    assert not res.ok and res.letters_ok
+    assert res.fill_spaces("a b cd") and res.text() == "a b cd"      # uncertain break from the reference
+    res.lines[0].spaces[1] = True                       # the memory is sure of this one: c|d? no, b|c stays
+    assert not res.fill_spaces("ab cd xx")              # characters differ: nothing taken

@@ -135,7 +135,7 @@ class WorkerPool:
         while True:
             try:
                 msg = w.outq.get()
-            except (EOFError, OSError):
+            except (EOFError, OSError, TypeError, ValueError):   # queue closed while waiting
                 return
             if msg[0] == "__exit__":
                 return

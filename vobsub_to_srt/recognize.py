@@ -7,12 +7,21 @@ import numpy as np
 
 from collections import Counter
 
-from .glyphdb import CLUSTER_TOL, OVERRIDE_SHARE, OVERRIDE_VOTES, GlyphDB, Variant, diff_ratio, is_strict, tol_for, trusted_label
+import re as _re
+
+from .glyphdb import CLUSTER_TOL, OVERRIDE_SHARE, OVERRIDE_VOTES, TOLERANT_MARGIN, GlyphDB, Variant, diff_ratio, is_strict, tol_for, topology, trusted_label
 from .styling import inherit_punct_styles, majority_style, render_styled
 from .segment import Glyph, Line
 
 T_ACCEPT = CLUSTER_TOL   # max pixel-diff ratio for a near match
 T_MARGIN = 0.06          # required advantage over best candidate with a different label
+_TAG_RE = _re.compile(r"</?\s*([a-zA-Z]+)[^>]*>")
+
+
+def strip_tags(text: str) -> str:
+    return _TAG_RE.sub("", text)
+
+
 AMBIG_IL = {"I", "l", "|"}      # glyphs that can be pixel-identical in sans-serif fonts
 
 
@@ -33,6 +42,7 @@ class GlyphResult:
     style: str                # subset of "biu"
     reason: str = ""          # why uncertain
     via: str = "exact"        # exact | near | seq | word | context
+    variant: Variant | None = None   # the memory variant this glyph was read with (exact or near)
 
 
 @dataclass
@@ -53,6 +63,37 @@ class CueResult:
     @property
     def ok(self) -> bool:
         return all(l.ok for l in self.lines)
+
+    @property
+    def letters_ok(self) -> bool:
+        return all(i.text is not None for l in self.lines for i in l.items)
+
+    def fill_spaces(self, reference: str) -> bool:
+        """Every character is read but some word breaks are uncertain: take those from a reference
+        reading (the vision model's text) whose characters agree line by line. The memory keeps
+        the breaks it is sure of. True if the result is complete."""
+        if not self.letters_ok:
+            return False
+        ref_lines = [l for l in strip_tags(reference).split("\n") if l.strip()]
+        if len(ref_lines) != len(self.lines):
+            return False
+        for lr, ref in zip(self.lines, ref_lines):
+            if ref.replace(" ", "") != "".join(it.text for it in lr.items):
+                return False
+            # char index at which each item starts, and the reference's breaks (space before index)
+            breaks = set()
+            n = 0
+            for ch in ref:
+                if ch == " ":
+                    breaks.add(n)
+                else:
+                    n += 1
+            pos = 0
+            for k, it in enumerate(lr.items[:-1]):
+                pos += len(it.text)
+                if lr.spaces[k] is None:
+                    lr.spaces[k] = pos in breaks
+        return self.ok
 
     def problems(self) -> list[tuple[int, int, str]]:
         out = []
@@ -87,17 +128,23 @@ def render_line(l: LineResult, placeholder: str = "\ufffd") -> str:
     return render_styled(chars)
 
 
-def _decide(v: Variant) -> tuple[str | None, str]:
+def _decide(v: Variant, db: GlyphDB | None = None) -> tuple[str | None, str]:
     """Label to read this glyph as. VLM votes decide (>= 2 votes, >= 2/3 majority); a teacher prior
-    is used while no VLM read exists and counts as one vote once there are VLM reads."""
+    is used while no VLM read exists and counts as one vote once there are VLM reads. In a font
+    whose I and l are drawn alike (`db.il_identical`), a glyph voted only I or only l is still
+    ambiguous: the word decides (lexicon), not the two cues that happened to teach it."""
     votes = Counter(v.votes)
     if v.prior:
         if not +votes:
             return v.prior, ""
         votes[v.prior] += 1
-    if confusable({k for k, n in votes.items() if n > 0}):
+    labels = {k for k, n in votes.items() if n > 0}
+    if confusable(labels):
         return None, "ambiguous I/l"
-    return trusted_label(votes)
+    label, reason = trusted_label(votes)
+    if label in ("I", "l") and db is not None and db.il_identical:
+        return None, "ambiguous I/l"
+    return label, reason
 
 
 def confirmed(v: Variant | None) -> str | None:
@@ -116,6 +163,17 @@ def confirmed(v: Variant | None) -> str | None:
 _diff_ratio = diff_ratio
 
 
+TOLERANT_MIN_H = 8        # glyph height (px) below which the edge-tolerant stage is not used
+TOLERANT_MIN_INK = 25     # ... and minimum ink pixels
+
+
+def _geo_disagree(file_votes: list | None, cluster_votes: list) -> bool:
+    """Both the glyph's word geometry in this file and the cluster have an opinion, and they differ."""
+    if not file_votes or file_votes[0] == file_votes[1] or cluster_votes[0] == cluster_votes[1]:
+        return False
+    return (file_votes[1] > file_votes[0]) != (cluster_votes[1] > cluster_votes[0])
+
+
 def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float]:
     """Best near match among confirmed shapes (any cluster member) of the same size +-1 px at the
     same position. A height difference is only bridged for labels whose identity does not hang on
@@ -125,11 +183,46 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
         v = db.lookup(key, g.top_rel)
         if v is None:
             continue
-        label, _ = _decide(v)
+        label, _ = _decide(v, db)
         if label is None or label == "" or (dh and is_strict(label)):
             continue
         if r <= tol_for(label):
             cands.append((r, key, v, label))
+    if not cands and db.tolerant and g.h >= TOLERANT_MIN_H and int(g.bits.sum()) >= TOLERANT_MIN_INK:
+        # stage 2 (rescaled tracks only): the edge-tolerant difference. Jitter moves edge pixels
+        # by one; the pixel difference of a small letter then exceeds the tolerance although the
+        # glyph is the same. One pixel of tolerance also hides a slant or a weight difference,
+        # so a cluster is only accepted if its italic/bold votes agree with this glyph's own word
+        # geometry in the file; punctuation-sized glyphs are excluded (too few pixels).
+        # Candidates nearest first; a candidate whose topology (components, holes) differs is a
+        # different letter (l vs !, c vs e) and is skipped. The nearest compatible one decides:
+        # a confirmed, non-strict label with agreeing slant/weight is read; an ambiguous I/l
+        # cluster is joined (same height, pixel difference not far off) so the lexicon decides;
+        # anything else (unconfirmed, strict letter, disagreeing geometry) makes the stage abstain
+        # rather than fall through to a runner-up ("ti!!" is how a runner-up reads "till").
+        fi = db.file_geo[0].get(g.key)
+        fb = db.file_geo[1].get(g.key)
+        topo = topology(g.key, g.bits)
+        ordered = []
+        for r, key, dh in db.tolerant_candidates(g.bits):
+            v = db.lookup(key, g.top_rel)
+            if v is not None and topology(key, db.shapes[key].bits) == topo:
+                ordered.append((r, key, v, _decide(v, db)[0], dh))
+        for r, key, v, label, dh in ordered:
+            if label is None and confusable({k for k, n in v.votes.items() if n > 0} | ({"I", "l"} if db.il_identical else set())):
+                # joining the font's I/l cluster: the word decides the letter anyway. One pixel of
+                # height is jitter when the font draws I and l alike; otherwise it may be the
+                # very difference between them and the join needs the same height.
+                if (dh == 0 or db.il_identical) and diff_ratio(g.bits, db.shapes[key].bits) <= 0.35:
+                    return key, v, r
+                return None, None, r
+            if not label or is_strict(label) or _geo_disagree(fi, v.geo_italic) or _geo_disagree(fb, v.geo_bold):
+                return None, None, r
+            other = next((c for c in ordered if c[3] != label), None)
+            if other is not None and other[0] - r < TOLERANT_MARGIN:
+                return None, None, r
+            return key, v, r
+        return None, None, 1.0
     if not cands:
         return None, None, 1.0
     cands.sort(key=lambda c: c[0])
@@ -174,18 +267,23 @@ def recognize_line(db: GlyphDB, line: Line, learn_near: bool = True, lexicon=Non
         via = "exact"
         if v is None:
             key, nv, ratio = near_match(db, g)
-            if nv is not None and learn_near:
-                # a jittered variant of a known shape: it joins the cluster and shares its votes
-                db.join(g.key, g.bits, g.top_rel, key)
-                v = db.lookup(g.key, g.top_rel)
+            if nv is not None:
+                # a jittered variant of a known shape shares its cluster's votes. Learning runs
+                # store it as a member; read-only runs (arbitration against the vision model,
+                # the final re-read) use the match without storing anything.
+                if learn_near:
+                    db.join(g.key, g.bits, g.top_rel, key)
+                    v = db.lookup(g.key, g.top_rel)
+                else:
+                    v = nv
                 via = "near"
         if v is None:
             items.append(GlyphResult(None, _style(None, g), "unknown glyph", via="none"))
         else:
-            label, reason = _decide(v)
+            label, reason = _decide(v, db)
             if label == "":
                 label, reason = None, "fragment of multi-part char"
-            items.append(GlyphResult(label, _style(v, g), reason, via=via))
+            items.append(GlyphResult(label, _style(v, g), reason, via=via, variant=v))
             if reason == "ambiguous I/l":
                 items[-1].via = "ambig"
         spans.append((i, i + 1))
@@ -276,8 +374,13 @@ def _candidates(db: GlyphDB, line: Line, res: LineResult, k: int) -> list[str]:
     if it.via != "ambig":
         return [it.text or "\ufffd"]
     g = line.glyphs[res.glyph_spans[k][0]]
-    v = db.lookup(g.key, g.top_rel)
-    return sorted(l for l, n in v.votes.items() if n > 0 and l)
+    v = it.variant or db.lookup(g.key, g.top_rel)     # a near match read-only is not stored
+    if v is None:
+        return ["\ufffd"]
+    labels = sorted(l for l, n in v.votes.items() if n > 0 and l)
+    if labels and set(labels) <= {"I", "l"} and db.il_identical:
+        return ["I", "l"]
+    return labels
 
 
 def recognize(db: GlyphDB, lines: list[Line], learn_near: bool = True, lexicon=None) -> CueResult:

@@ -283,6 +283,11 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
         # clustering, which costs more vision requests than usual.
         log.warning("rescaled track suspected: %.0f%% of %d glyph bitmaps occur once", 100 * once_share, len(keyfreq))
         emit("notice", kind="rescaled", unique_share=round(once_share, 3), bitmaps=len(keyfreq))
+        # Edge-tolerant near matching for this track's jitter, but only against a glyph set that
+        # already knows the font: a new set learns its first file through exact bitmaps (the proven
+        # trajectory); from the next file on, jittered variants of known letters are read instead
+        # of asked.
+        db.tolerant = probe_mode != "new"
         report_notes.append(f"rescaled track suspected: {100 * once_share:.0f}% of {len(keyfreq)} glyph bitmaps occur once")
     # Geometry votes accumulate across files: what the DB already holds plus this file's votes.
     # (Decisions compare the two counts, so re-running a file cannot flip them.) The votes are
@@ -444,6 +449,8 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
             flagged[st.cue.index] = list(lr.conflicts)
         # Arbitration: can the (updated) DB read this cue on its own, and does it agree?
         res = recognize(db, st.lines, learn_near=False, lexicon=lexicon)
+        if not res.ok and res.letters_ok and res.fill_spaces(st.text):
+            stats["spaces_filled_from_vlm"] += 1     # only the uncertain breaks come from the VLM
         if res.ok:
             ocr_text = res.text()
             if strip_tags(ocr_text) == strip_tags(st.text):
@@ -570,6 +577,8 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
             continue
         aligns, _ = align_cue(db, st.lines, relined(st, raw), gap_t)
         res_final = recognize(db, st.lines, learn_near=False, lexicon=lexicon)
+        if not res_final.ok and res_final.letters_ok:
+            res_final.fill_spaces(st.text)
         if res_final.ok and _no_spaces(res_final.text()) == _no_spaces(st.text) and \
                 strip_tags(res_final.text()) != strip_tags(st.text):
             flagged.setdefault(st.cue.index, []).append(f"spaces from geometry (final): {st.text!r} -> {res_final.text()!r}")
