@@ -553,3 +553,20 @@ def test_uncertain_spaces_are_filled_from_the_reference_reading():
     assert res.fill_spaces("a b cd") and res.text() == "a b cd"      # uncertain break from the reference
     res.lines[0].spaces[1] = True                       # the memory is sure of this one: c|d? no, b|c stays
     assert not res.fill_spaces("ab cd xx")              # characters differ: nothing taken
+
+
+def test_once_seen_glyphs_are_read_tentatively_without_a_model(tmp_path):
+    """A glyph the model read once is not confirmed; with no model to ask, the fallback takes it as
+    a low-confidence reading (flagged) instead of a placeholder - unless configured otherwise."""
+    import asyncio
+    from vobsub_to_srt.pipeline import Options, process_file, VobSubData
+    from vobsub_to_srt.recognize import recognize
+    db = GlyphDB("t", tmp_path / "gm" / "t.json")
+    db.attach_private(tmp_path / "wm", False)
+    lines = segment(render("abc"))
+    learn_cue(db, lines, "abc", 12, source="img1")          # every glyph: one vote
+    res = recognize(db, lines, learn_near=False)
+    assert not res.ok and all("unconfirmed" in r for _, _, r in res.problems())
+    tent = recognize(db, lines, learn_near=False, tentative=True)
+    assert tent.ok and tent.text() == "abc" and sorted(tent.low_confidence()) == ["a", "b", "c"]
+    assert not any(it.low for it in res.lines[0].items)

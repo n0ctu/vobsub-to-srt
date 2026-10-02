@@ -42,8 +42,9 @@ class GlyphResult:
     text: str | None          # None = unknown/uncertain
     style: str                # subset of "biu"
     reason: str = ""          # why uncertain
-    via: str = "exact"        # exact | near | seq | word | context
+    via: str = "exact"        # exact | near | seq | word | context | tentative
     variant: Variant | None = None   # the memory variant this glyph was read with (exact or near)
+    low: bool = False         # read from a single sighting (tentative): flagged, never learned from
 
 
 @dataclass
@@ -95,6 +96,10 @@ class CueResult:
                 if lr.spaces[k] is None:
                     lr.spaces[k] = pos in breaks
         return self.ok
+
+    def low_confidence(self) -> list[str]:
+        """Labels read tentatively (glyph seen once before)."""
+        return [it.text for l in self.lines for it in l.items if it.low and it.text]
 
     def problems(self) -> list[tuple[int, int, str]]:
         out = []
@@ -274,7 +279,8 @@ def _style(v: Variant | None, g: Glyph) -> str:
     return st + "u" if g.underlined else st
 
 
-def recognize_line(db: GlyphDB, line: Line, learn_near: bool = True, lexicon=None) -> LineResult:
+def recognize_line(db: GlyphDB, line: Line, learn_near: bool = True, lexicon=None,
+                   tentative: bool = False) -> LineResult:
     gl = line.glyphs
     items: list[GlyphResult] = []
     spans: list[tuple[int, int]] = []
@@ -319,7 +325,14 @@ def recognize_line(db: GlyphDB, line: Line, learn_near: bool = True, lexicon=Non
             label, reason = _decide(v, db)
             if label == "":
                 label, reason = None, "fragment of multi-part char"
-            items.append(GlyphResult(label, _style(v, g), reason, via=via, variant=v))
+            low = False
+            if label is None and tentative and reason.startswith("unconfirmed"):
+                # a glyph the vision model read once: not evidence enough to teach, but a far
+                # better guess than a placeholder when no model can be asked (flagged per cue)
+                top = v.votes.most_common(1)[0][0] if v.votes else None
+                if top and not confusable(set(v.votes) | ({"I", "l"} if db.il_identical and top in ("I", "l") else set())):
+                    label, reason, via, low = top, "", "tentative", True
+            items.append(GlyphResult(label, _style(v, g), reason, via=via, variant=v, low=low))
             if reason == "ambiguous I/l":
                 items[-1].via = "ambig"
         spans.append((i, i + 1))
@@ -419,5 +432,6 @@ def _candidates(db: GlyphDB, line: Line, res: LineResult, k: int) -> list[str]:
     return labels
 
 
-def recognize(db: GlyphDB, lines: list[Line], learn_near: bool = True, lexicon=None) -> CueResult:
-    return CueResult([recognize_line(db, l, learn_near, lexicon) for l in lines])
+def recognize(db: GlyphDB, lines: list[Line], learn_near: bool = True, lexicon=None,
+              tentative: bool = False) -> CueResult:
+    return CueResult([recognize_line(db, l, learn_near, lexicon, tentative) for l in lines])

@@ -38,6 +38,8 @@ def main() -> None:
                     help="private per-DB data (not publishable): learned image hashes and the optional word memory")
     ap.add_argument("--keep-special-chars", action="store_true",
                     help="keep typographic variants (´ ’ „ “ – — … ligatures) instead of folding them to ' \" - ...")
+    ap.add_argument("--low-confidence", choices=["accept", "placeholder"], default="accept",
+                    help="cues no model could resolve: accept glyphs seen once before (flagged) or write placeholders")
     ap.add_argument("--lexicon", choices=["auto", "wordfreq", "hunspell", "off"], default="auto",
                     help="tie-break for pixel-identical I/l glyphs (default: wordfreq, then Hunspell, then case "
                          "consistency for unknown words)")
@@ -57,6 +59,7 @@ def main() -> None:
                    batch_size=a.batch_size,
                    sheet=a.sheet,
                    render=a.render,
+                   low_confidence=a.low_confidence,
                    mode=a.mode, track=a.track, context=a.context, max_vlm_cues=a.max_vlm_cues,
                    rescale=a.debug_rescale, lexicon=a.lexicon,
                    keep_special_chars=a.keep_special_chars,

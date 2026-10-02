@@ -336,7 +336,7 @@ function select(id) {
     const srt = getSrt(id);
     const tmp = newState(job); delete live[id]; paintProgress(tmp, job);
     if (job.status === 'done') {
-      if (srt !== null) { const src = getSrc(id); transcriptAdd(parseSrt(srt).map((c, i) => ({ i, start: c.start, text: c.text, src: { m: 'nocr', v: 'vlm', u: 'fallback' }[src[i]] || 'nocr' })), false); }
+      if (srt !== null) { const src = getSrc(id); transcriptAdd(parseSrt(srt).map((c, i) => ({ i, start: c.start, text: c.text, src: { m: 'nocr', v: 'vlm', u: 'fallback', t: 'tentative' }[src[i]] || 'nocr' })), false); }
       finish(job, null); $('#gnote').hidden = false;
     } else if (job.status === 'pending') {
       $('#pleft').textContent = pendingFiles[id] ? 'waiting for its turn' : 'files no longer available - add the track again';
@@ -439,8 +439,8 @@ setInterval(() => {
 /* ---------- transcript ---------- */
 const rows = new Map();
 const hms = ms => { const s = Math.floor(ms / 1000); return `${String(Math.floor(s / 3600)).padStart(2, '0')}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`; };
-const srcKind = s => s === 'nocr' || s === 'nocr-arbitrated' ? 'memory' : s === 'fallback' ? 'unresolved' : 'vision';
-const dotClass = { memory: 'bg-zinc-400', vision: 'bg-sky-500', unresolved: 'bg-amber-500' };
+const srcKind = s => s === 'nocr' || s === 'nocr-arbitrated' ? 'memory' : s === 'fallback' ? 'unresolved' : s === 'tentative' ? 'low confidence' : 'vision';
+const dotClass = { memory: 'bg-zinc-400', vision: 'bg-sky-500', unresolved: 'bg-amber-500', 'low confidence': 'bg-orange-400' };
 function transcriptAdd(items, flash = true) {
   const box = $('#transcript'); $('#tbox').hidden = false;
   const stick = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
@@ -455,7 +455,7 @@ function transcriptAdd(items, flash = true) {
     const kind = srcKind(c.src);
     row.className = (flash ? 'flash ' : '') + 'grid grid-cols-[4.6em_1fr_auto] items-start gap-2 px-3 py-1';
     row.innerHTML = `<span class="pt-0.5 font-mono text-xs tabular-nums text-zinc-500">${hms(c.start)}</span>
-      <span class="whitespace-pre-wrap ${kind === 'unresolved' ? 'text-amber-600 dark:text-amber-400' : ''}"></span>
+      <span class="whitespace-pre-wrap ${kind === 'unresolved' ? 'text-amber-600 dark:text-amber-400' : kind === 'low confidence' ? 'text-orange-600 dark:text-orange-400' : ''}"></span>
       <span class="mt-1.5 inline-block h-2 w-2 rounded-full ${dotClass[kind]}" title="${kind}"></span>`;
     row.children[1].textContent = c.text.replace(/<\/?[biu]>/g, '');
     if (flash) setTimeout(() => row.classList.remove('flash'), 1500);
@@ -523,8 +523,10 @@ function summarize(e) {
   const bad = e.unresolved || 0;
   const parts = [`${e.cues} cues`, `${nocr} read from the glyph memory`];
   if (vlm) parts.push(`${vlm} read by the vision model (${e.vlm_used} requests)`);
+  const low = e.low_confidence || 0;
+  if (low) parts.push(`${low} read with low confidence (glyphs seen once before, orange in the transcript)`);
   const tail = bad ? `${bad} cues contain unknown glyphs (�) - search the file for that character` : 'every cue resolved';
-  $('#summary').innerHTML = `<span class="${bad ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}">${tail}.</span> ${parts.join(', ')}.`;
+  $('#summary').innerHTML = `<span class="${bad ? 'text-amber-600 dark:text-amber-400' : low ? 'text-orange-600 dark:text-orange-400' : 'text-emerald-600 dark:text-emerald-400'}">${tail}.</span> ${parts.join(', ')}.`;
 }
 
 /* ---------- runner: one job at a time ---------- */
@@ -608,7 +610,7 @@ async function complete(job, st, e) {
   try { const r = await fetch(`/api/jobs/${job.serverId}/srt`); if (r.ok) srt = await r.text(); } catch (err) {}
   try { const r = await fetch(`/api/jobs/${job.serverId}/report`); if (r.ok) rep = await r.text(); } catch (err) {}
   if (srt === null) { job.status = 'lost'; job.error = 'result could not be fetched'; saveJobs(); renderQueue(); pump(); return; }
-  const src = Array.from({ length: job.cues }, (_, i) => { const c = st.cues.get(i); return !c ? 'm' : c.src === 'fallback' ? 'u' : srcKind(c.src) === 'vision' ? 'v' : 'm'; }).join('');
+  const src = Array.from({ length: job.cues }, (_, i) => { const c = st.cues.get(i); return !c ? 'm' : c.src === 'fallback' ? 'u' : c.src === 'tentative' ? 't' : srcKind(c.src) === 'vision' ? 'v' : 'm'; }).join('');
   job.summary = { by_source: e.by_source, unresolved: e.unresolved || 0, vlm_used: e.vlm_used || 0, seconds: e.seconds, cues: job.cues };
   st.summary = job.summary; storeResult(job, srt, src, rep);
   job.status = 'done'; delete pendingFiles[job.id]; saveJobs(); renderQueue();

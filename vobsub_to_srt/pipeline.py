@@ -59,6 +59,7 @@ class Options:
     train_until: float = 0.01            # stop "training" when unknown glyph occurrences < this share
     min_probe_coverage: float = 0.5
     placeholder: str = "�"
+    low_confidence: str = "accept"       # unresolved cues: "accept" glyphs seen once (flagged) | "placeholder"
     max_vlm_cues: int | None = None      # API requests per file; when used up, finish teacher-less
     progress: Callable[[dict], None] | None = None   # called with {"event": ..., ...} at each stage
     context: int = 12                    # previous transcribed cues passed to the VLM as reference (0 = off)
@@ -621,6 +622,20 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
         if st.text is not None:
             continue
         res = st.result or recognize(db, st.lines, lexicon=lexicon)
+        if opts.low_confidence == "accept":
+            # No model to ask (none configured, budget used up, or it failed): glyphs the model
+            # read once before are taken as a low-confidence reading instead of a placeholder.
+            # The cue is flagged in the report and the page; nothing is learned from it.
+            tent = recognize(db, st.lines, learn_near=False, lexicon=lexicon, tentative=True)
+            if tent.low_confidence():
+                res = tent
+                note = "low confidence: " + ", ".join(sorted(set(repr(t) for t in tent.low_confidence()))) + " seen once before"
+                flagged.setdefault(st.cue.index, []).append(note)
+                if tent.ok:
+                    st.text = tent.text()
+                    st.source = "tentative"
+                    stats["tentative"] += 1
+                    continue
         st.text = res.text(opts.placeholder)
         st.source = "fallback"
         stats["fallback"] += 1
@@ -670,7 +685,11 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
         out.write_text(srt_text, encoding="utf-8")
         (opts.out_dir / (stem + ".report.json")).write_text(json.dumps(report, indent=2, ensure_ascii=False))
     log.info("%s -> %s | %s | %.1fs", idx_path.name, out or "(memory)", dict(stats), report["seconds"])
-    emit("done", by_source=dict(stats), seconds=report["seconds"], unresolved=stats.get("fallback", 0))
+    emit("done", by_source=dict(stats), seconds=report["seconds"], unresolved=stats.get("fallback", 0),
+         low_confidence=stats.get("tentative", 0))
+    if stats.get("tentative"):
+        log.warning("%s: %d cues read with low confidence (glyphs seen once before; see the report's flagged cues)",
+                    idx_path.name, stats["tentative"])
     if stats.get("fallback"):
         log.warning("%s: %d of %d cues contain glyphs this glyph memory does not know (marked %s); "
                     "configure a VLM endpoint to learn them", idx_path.name, stats["fallback"], len(states),
