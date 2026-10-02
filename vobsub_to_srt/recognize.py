@@ -185,11 +185,14 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
     same position. A height difference is only bridged for labels whose identity does not hang on
     one pixel row (never for I/l, i, 1, punctuation). Returns (key, variant, ratio) or Nones."""
     cands: list[tuple[float, str, Variant, str]] = []
-    for r, key, dh in db.near_candidates(g.bits):
+    decided: dict[int, str | None] = {}        # the jitter members of one cluster share a variant
+    for r, key, dh in db.near_candidates(g.bits, key=g.key):
         v = db.lookup(key, g.top_rel)
         if v is None:
             continue
-        label, _ = _decide(v, db)
+        label = decided.get(id(v))
+        if id(v) not in decided:
+            label = decided[id(v)] = _decide(v, db)[0]
         if label is None or label == "" or (dh and is_strict(label)):
             continue
         if r <= tol_for(label):

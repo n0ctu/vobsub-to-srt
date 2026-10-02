@@ -95,6 +95,17 @@ def case_regular(word: str) -> bool:
     return all(p.islower() or p.isupper() or (p[0].isupper() and p[1:].islower()) for p in parts)
 
 
+_HUNSPELL: dict[str, object] = {}
+
+
+def _hunspell(base: str):
+    d = _HUNSPELL.get(base)
+    if d is None:
+        from spylls.hunspell import Dictionary
+        d = _HUNSPELL[base] = Dictionary.from_files(base)
+    return d
+
+
 class Lexicon:
     def __init__(self, lang: str, use_wordfreq: bool = True, use_hunspell: bool = True, use_case: bool = True,
                  download: bool = True):
@@ -117,6 +128,8 @@ class Lexicon:
 
     @staticmethod
     def _load_hunspell(lang: str, download: bool = True):
+        """The parsed dictionary is shared by every lexicon of this process (parsing a .dic takes
+        seconds; a web worker converts many files, and the dictionary is only ever read)."""
         try:
             from spylls.hunspell import Dictionary
         except ImportError:
@@ -126,7 +139,7 @@ class Lexicon:
             for name in HUNSPELL_NAMES.get(lang, [lang]):
                 if (d / f"{name}.dic").exists() and (d / f"{name}.aff").exists():
                     log.info("lexicon: Hunspell dictionary %s", d / name)
-                    return Dictionary.from_files(str(d / name))
+                    return _hunspell(str(d / name))
         if download and lang in DICT_SOURCES:
             try:
                 base = download_hunspell(lang)

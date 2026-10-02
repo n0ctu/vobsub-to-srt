@@ -43,6 +43,7 @@ PROTO_STABLE = 0.9        # a pixel is stable if ink in >= 90% or <= 10% of the 
 MIN_MEMBER_SEEN = 2       # a jitter member seen once is not kept (rescaled tracks: thousands per file)
 MAX_MEMBERS = 24          # most frequent members kept per cluster; the rest is read via the near search
 STRICT = set("Il|i1!jíìïî")   # punctuation is told apart by size and baseline position instead
+_ALIGN = [(dy, dx) for dy in (0, 1, 2) for dx in (0, 1, 2)]   # the 3x3 alignments of a near comparison
 
 
 def diff_ratio(a: np.ndarray, b: np.ndarray) -> float:
@@ -240,7 +241,8 @@ class GlyphDB:
         # word memory for resolving ambiguous glyphs (I/l): "k1|k2|..." -> {text: votes}
         self.words: dict[str, Counter] = {}
         self.by_size: dict[tuple[int, int], list[str]] = defaultdict(list)
-        self._stacks: dict[tuple[int, int], tuple[list[str], np.ndarray]] = {}   # bucket -> (keys, bits)
+        self._stacks: dict[tuple[int, int], tuple] = {}   # size bucket -> (keys, stacked bits, ink counts)
+        self._near_cache: dict[tuple[str, float], tuple[tuple, list]] = {}   # (glyph key, tol) -> (bucket stamp, result)
         self._tstacks: dict[tuple[int, int], tuple[list[str], np.ndarray, np.ndarray]] = {}   # + dilated bits
         self._soft: dict[str, str] = {}           # soft_canonical cache, cleared when shapes are added
         self.dirty = False
@@ -304,42 +306,68 @@ class GlyphDB:
         votes = +v.votes
         return votes.most_common(1)[0][0] if votes else v.prior
 
-    def near_candidates(self, bits: np.ndarray, max_ratio: float = CLUSTER_TOL) -> list[tuple[float, str, int]]:
+    def _bucket_stamp(self, h: int, w: int) -> tuple:
+        return tuple(len(self.by_size.get((h + dh, w + dw), ())) for dh in (-1, 0, 1) for dw in (-1, 0, 1))
+
+    def near_candidates(self, bits: np.ndarray, max_ratio: float = CLUSTER_TOL,
+                        key: str | None = None) -> list[tuple[float, str, int]]:
         """All stored shapes of the same size +-1 px within `max_ratio` of `bits`, nearest first,
-        as (ratio, key, dh). Vectorised per size bucket: the bucket's bitmaps are stacked once and
-        compared for all 3x3 alignments at a time."""
+        as (ratio, key, dh). Vectorised per size bucket: the bucket's bitmaps are stacked once;
+        shapes whose ink count alone puts them out of reach are dropped (the difference is at
+        least |ink_a - ink_b|), the rest is compared for all 3x3 alignments in one operation.
+        With `key` (the glyph's bitmap key) the result is remembered until a shape joins one of
+        the nine size buckets: the probe, the reading pass and the clustering of a learned
+        variant ask the same question about the same bitmap."""
         h, w = bits.shape
-        out: list[tuple[float, str, int]] = []
+        stamp = self._bucket_stamp(h, w)
+        hit = self._near_cache.get((key, max_ratio)) if key is not None else None
+        if hit is not None and hit[0] == stamp:
+            return [(r, k, dh) for r, b, i, k, dh in hit[1]]
+        # Shapes only ever join a bucket (appended), so a remembered result stays valid for the
+        # shapes it saw; only the newcomers of each grown bucket are compared. Candidates carry
+        # (bucket order, index in bucket) so the final order equals that of a full search.
+        found: list[tuple[float, int, int, str, int]] = list(hit[1]) if hit is not None else []
+        seen = hit[0] if hit is not None else (0,) * 9
         na = int(bits.sum())
-        for dh in (-1, 0, 1):
-            for dw in (-1, 0, 1):
-                size = (h + dh, w + dw)
-                keys = self.by_size.get(size)
-                if not keys:
-                    continue
-                st = self._stacks.get(size)
-                if st is None or len(st[0]) != len(keys):
-                    st = (list(keys), np.stack([self.shapes[k].bits for k in keys]))
-                    self._stacks[size] = st
-                skeys, stack = st
-                H, W = max(h, size[0]) + 2, max(w, size[1]) + 2
-                A = np.zeros((H, W), bool)
-                A[1:1 + h, 1:1 + w] = bits
-                nb = stack.reshape(len(skeys), -1).sum(axis=1)
-                best = None
-                for dy in (0, 1, 2):
-                    for dx in (0, 1, 2):
-                        if dy + size[0] > H or dx + size[1] > W:
-                            continue
-                        B = np.zeros((len(skeys), H, W), bool)
-                        B[:, dy:dy + size[0], dx:dx + size[1]] = stack
-                        d = (A[None] ^ B).reshape(len(skeys), -1).sum(axis=1)
-                        best = d if best is None else np.minimum(best, d)
-                ratios = best / np.maximum(1.0, (na + nb) / 2)
-                for i in np.nonzero(ratios <= max_ratio)[0]:
-                    out.append((float(ratios[i]), skeys[i], dh))
-        out.sort(key=lambda c: c[0])
-        return out
+        for b, (dh, dw) in enumerate(_ALIGN):
+            dh -= 1
+            dw -= 1
+            size = (h + dh, w + dw)
+            keys = self.by_size.get(size)
+            if not keys or len(keys) <= seen[b]:
+                continue
+            st = self._stacks.get(size)
+            if st is None or len(st[0]) != len(keys):
+                flat = np.stack([self.shapes[k].bits for k in keys]).reshape(len(keys), -1).astype(np.float32)
+                st = (list(keys), flat, flat.sum(axis=1).astype(np.int64))
+                self._stacks[size] = st
+            skeys, flat, nb = st
+            # ink-count bound: the pixel difference is at least |ink_a - ink_b|
+            reach = np.abs(nb - na) <= max_ratio * np.maximum(1.0, (na + nb) / 2)
+            if seen[b]:
+                reach[:seen[b]] = False
+            idx = np.nonzero(reach)[0]
+            if not len(idx):
+                continue
+            # pixel difference = ink_a + ink_b - 2 * overlap; the overlap for all nine alignments
+            # is one matrix product of the query's nine shifted windows with the bucket's bitmaps
+            # (0/1 values: exact in float32)
+            H, W = max(h, size[0]) + 2, max(w, size[1]) + 2
+            A = np.zeros((H, W), np.float32)
+            A[1:1 + h, 1:1 + w] = bits
+            windows = np.lib.stride_tricks.sliding_window_view(A, size)[:3, :3].reshape(9, -1)
+            overlap = windows @ flat[idx].T                               # (9, n)
+            best = (na + nb[idx] - 2 * overlap.astype(np.int64)).min(axis=0)
+            ratios = best / np.maximum(1.0, (na + nb[idx]) / 2)
+            sel = np.nonzero(ratios <= max_ratio)[0]
+            if len(sel):
+                found.extend((r, b, i, skeys[i], dh) for r, i in zip(ratios[sel].tolist(), idx[sel].tolist()))
+        found.sort(key=lambda c: c[:3])
+        if key is not None:
+            if len(self._near_cache) >= 20000:
+                self._near_cache.clear()
+            self._near_cache[(key, max_ratio)] = (stamp, found)
+        return [(r, k, dh) for r, b, i, k, dh in found]
 
     def tolerant_candidates(self, bits: np.ndarray, max_ratio: float = TOLERANT_TOL) -> list[tuple[float, str, int]]:
         """Like near_candidates, with an edge-tolerant difference: ink of one bitmap that lies within
@@ -384,11 +412,12 @@ class GlyphDB:
         out.sort(key=lambda c: c[0])
         return out
 
-    def find_cluster(self, bits: np.ndarray, top_rel: int, label: str | None = None) -> str | None:
+    def find_cluster(self, bits: np.ndarray, top_rel: int, label: str | None = None,
+                     key: str | None = None) -> str | None:
         """Canonical key of the cluster a new shape belongs to, or None if it starts its own.
         Same height only when the new label or the candidate's label is strict (I/l & co)."""
         cands: list[tuple[float, str, str | None]] = []
-        for r, key, dh in self.near_candidates(bits):
+        for r, key, dh in self.near_candidates(bits, key=key):
             shape = self.shapes[key]
             if self.shapes[shape.cluster].variant(top_rel, self.pos_tol) is None:
                 continue
@@ -413,7 +442,7 @@ class GlyphDB:
         """The shape for a glyph, created (and clustered) if new."""
         shape = self.shapes.get(key)
         if shape is None:
-            canon = self.find_cluster(bits, top_rel, label)
+            canon = self.find_cluster(bits, top_rel, label, key=key)
             shape = Shape(key, bits.copy(), derived_from=derived_from or canon, cluster=canon or key)
             self.shapes[key] = shape
             self.by_size[bits.shape].append(key)
