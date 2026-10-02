@@ -172,3 +172,30 @@ def test_prototype_median_mask_and_matching(tmp_path):
     assert db2.protos[ge.key].n == PROTO_MIN + 2 and db2.protos[ge.key].acc is None     # public: median + mask
     db2.attach_private(tmp_path / "wm", False)
     assert db2.protos[ge.key].acc is not None and db2.proto_candidates(new)[0][1] == ge.key
+
+
+def test_tolerant_stage_prefers_confirmed_cluster_over_unconfirmed_twin():
+    """A jittered variant of a letter that never joined its confirmed cluster (one vote of its
+    own; every edge moved by a pixel puts it outside the pixel tolerance but inside the
+    edge-tolerant one) must not make the edge-tolerant stage abstain when it is the nearest
+    candidate; the confirmed cluster decides."""
+    import numpy as np
+    from collections import Counter
+    from vobsub_to_srt.glyphdb import GlyphDB, Variant
+    from vobsub_to_srt.recognize import near_match
+    from vobsub_to_srt.segment import Glyph, glyph_key
+    base = np.zeros((20, 14), bool)                 # a chunky letter with a margin column each side
+    base[:, 5:9] = True; base[2:6, 1:13] = True; base[14:20, 1:6] = True
+    right = base | np.roll(base, 1, axis=1)         # thickened to the right
+    left = base | np.roll(base, -1, axis=1)         # thickened to the left
+    def glyph(bits):
+        g = Glyph(0, 0, bits); g.key = glyph_key(bits); g.top_rel = -20
+        return g
+    db = GlyphDB("t"); db.unit = 14.0; db.tolerant = True; db.file_geo = ({}, {})
+    twin, conf, q = glyph(right), glyph(base), glyph(left)
+    db.add_vote(twin.key, twin.bits, -20, "y", "")                   # first in its size bucket, one vote
+    for _ in range(3):
+        db.add_vote(conf.key, conf.bits, -20, "y", "")               # confirmed cluster of its own
+    assert db.canonical(conf.key) != db.canonical(twin.key)
+    key, v, r = near_match(db, q)
+    assert v is not None and v.votes["y"] == 3                      # read via the confirmed cluster

@@ -255,14 +255,28 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
                 if (dh == 0 or db.il_identical) and diff_ratio(g.bits, db.shapes[key].bits) <= 0.35:
                     return key, v, r
                 return None, None, r
-            if not label or is_strict(label):
+            if label is None:
+                # An unconfirmed cluster this close is usually a jittered twin of a confirmed letter
+                # that never joined it (the pixel search missed by a few pixels). When a confirmed
+                # cluster is equally near and the twin's only reading agrees with it, the
+                # confirmed cluster decides; a twin that reads differently, or stands alone, is
+                # still a reason to wait for the model.
+                votes = {k for k, n in v.votes.items() if n > 0}
+                twin = next((c for c in ordered if c[3] and c[0] - r < TOLERANT_MARGIN), None)
+                if twin is not None and (not votes or votes == {twin[3]}):
+                    continue
+                return None, None, r
+            if is_strict(label):
                 return None, None, r
             # one pixel of tolerance hides a slant (an italic 0 matched the upright 0 cluster at
             # 0.02): slant and weight must agree with the glyph's word geometry, whatever its size.
             # Glyphs identical to a prototype on stable pixels are read by stage 1b regardless.
             if _geo_disagree(fi, v.geo_italic) or _geo_disagree(fb, v.geo_bold):
                 return None, None, r
-            other = next((c for c in ordered if c[3] != label), None)
+            # a runner-up with a different confirmed label too close: ambiguous. Unconfirmed
+            # clusters whose single reading is this label (or none) are twins, not rivals.
+            other = next((c for c in ordered if c[3] != label and (c[3] is not None or
+                          {k for k, n in c[2].votes.items() if n > 0} - {label})), None)
             if other is not None and other[0] - r < TOLERANT_MARGIN:
                 return None, None, r
             return key, v, r
