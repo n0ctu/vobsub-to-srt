@@ -1,5 +1,10 @@
 # VobSub to SRT Converter
 
+> **Experimental.** This pipeline is under active development: recognition strategies, the glyph
+> memory format and the private sidecar format change often and without migration. Expect glyph
+> sets learned by one version to be rebuilt by the next, and treat results, configuration flags and
+> the web app's behaviour as subject to change.
+
 VobSub (`.idx`/`.sub`) to SRT. Subtitle glyphs are read by deterministic bitmap matching (in the spirit of Subtitle Edit's binary image compare). A vision LLM (any OpenAI-compatible endpoint, developed against DeepSeek) acts as the *teacher* for glyphs the database doesn't know yet.
 A new font costs a few dozen VLM calls. Later files with the same font need none.
 
