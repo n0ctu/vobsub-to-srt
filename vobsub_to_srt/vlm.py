@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import random
+import time
 import re
 from pathlib import Path
 
@@ -169,6 +170,9 @@ def _ocr_fixups(text: str, n_lines: int) -> str:
     return "\n".join(lines)
 
 
+COOLDOWN_MAX = 120.0    # seconds: longest pause after repeated HTTP 429
+
+
 class AdaptiveLimiter:
     """Concurrency limiter whose limit shrinks on HTTP 429 and slowly grows back on success."""
 
@@ -229,7 +233,14 @@ class VLMClient:
         # request slots: this client's own adaptive limiter, or one shared across worker
         # processes (pool.PipeLimiter) with the same acquire()/release(throttled) interface
         self.limiter = limiter if limiter is not None else AdaptiveLimiter(concurrency)
-        self.max_throttle_retries = 60
+        # HTTP 429 handling: a cooldown shared by every request of this client. Each throttled
+        # answer doubles it (from the server's retry-after, at least 5 s, at most COOLDOWN_MAX);
+        # nothing is sent before it has passed; a successful answer ends it. Without this, every
+        # in-flight request probed the endpoint again on its own schedule (1763 throttled
+        # requests for 127 cues on one file).
+        self.max_throttle_retries = 12
+        self._cooldown = 0.0
+        self._cooldown_until = 0.0
         self.timeout = timeout
         self.max_attempts = max_attempts
         self.calls = 0          # real API requests (incl. throttled ones)
@@ -321,6 +332,7 @@ class VLMClient:
         last_err: Exception | None = None
         attempt = throttles = 0
         while attempt < self.max_attempts:
+            await self._wait_cooldown()
             await self.limiter.acquire()
             throttled = False
             try:
@@ -333,6 +345,7 @@ class VLMClient:
                     self.throttled += 1
                     throttles += 1
                     retry_after = float(r.headers.get("retry-after", "5") or 5)
+                    self._throttled_now(retry_after)
                     if throttles > self.max_throttle_retries:
                         raise httpx.HTTPStatusError("HTTP 429 (gave up)", request=r.request, response=r)
                 elif r.status_code >= 500:
@@ -347,6 +360,7 @@ class VLMClient:
                     self.cache_put(key, text)
                     if self.cache_get(image_key) is None:
                         self.cache_put(image_key, text)
+                    self._cooldown = 0.0
                     return text, False
             except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
                 last_err = e
@@ -354,8 +368,20 @@ class VLMClient:
                 log.debug("VLM attempt %d failed: %s", attempt, e)
             finally:
                 await self.limiter.release(throttled)
-            if throttled:
-                await asyncio.sleep(retry_after + random.random())
-            else:
+            if not throttled:
                 await asyncio.sleep(min(2 ** attempt, 20) + random.random())
         raise RuntimeError(f"VLM failed after {self.max_attempts} attempts: {last_err}")
+
+    def _throttled_now(self, retry_after: float) -> None:
+        self._cooldown = min(COOLDOWN_MAX, max(retry_after, 5.0, 2 * self._cooldown))
+        until = time.monotonic() + self._cooldown + random.random()
+        if until > self._cooldown_until:
+            self._cooldown_until = until
+            log.info("rate limited (HTTP 429): pausing requests for %.0f s", self._cooldown)
+
+    async def _wait_cooldown(self) -> None:
+        while True:
+            left = self._cooldown_until - time.monotonic()
+            if left <= 0:
+                return
+            await asyncio.sleep(left)
