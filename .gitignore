@@ -27,3 +27,8 @@ dist/
 NOTES.md
 stats.json*
 stats.sqlite*
+
+# benchmark corpus (copyrighted subtitle tracks); only the README and the index template are tracked
+corpus/*
+!corpus/README.md
+!corpus/index.example.csv
