@@ -249,10 +249,10 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
                 return None, None, r
             if not label or is_strict(label):
                 return None, None, r
-            # one pixel of tolerance hides the slant of x-height letters, not of capitals and
-            # ascenders (their shear is several pixels): the geometry gate is for small glyphs
-            tall = db.unit is not None and g.h >= 1.2 * db.unit
-            if not tall and (_geo_disagree(fi, v.geo_italic) or _geo_disagree(fb, v.geo_bold)):
+            # one pixel of tolerance hides a slant (an italic 0 matched the upright 0 cluster at
+            # 0.02): slant and weight must agree with the glyph's word geometry, whatever its size.
+            # Glyphs identical to a prototype on stable pixels are read by stage 1b regardless.
+            if _geo_disagree(fi, v.geo_italic) or _geo_disagree(fb, v.geo_bold):
                 return None, None, r
             other = next((c for c in ordered if c[3] != label), None)
             if other is not None and other[0] - r < TOLERANT_MARGIN:
