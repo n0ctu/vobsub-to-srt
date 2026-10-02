@@ -18,7 +18,7 @@ def test_429_cooldown_is_shared_and_doubles(monkeypatch):
     monkeypatch.setattr(vlm.time, "monotonic", lambda: clock["t"])
     monkeypatch.setattr(vlm.asyncio, "sleep", fake_sleep)
     monkeypatch.setattr(vlm.random, "random", lambda: 0.0)
-    answers = iter([429, 429, 200, 200])
+    answers = iter([429, 429, 429, 200, 200])     # a burst of two, one more after the pause, then success
 
     def handler(request):
         code = next(answers)
@@ -34,7 +34,9 @@ def test_429_cooldown_is_shared_and_doubles(monkeypatch):
 
     c, a, b = asyncio.run(go())
     assert a[0] == "Hallo" and b[0] == "Hallo"
-    assert c.throttled == 2 and c.calls == 4
-    # first throttle: 7 s (retry-after), second: doubled to 14 s; both requests waited the pause
-    assert c._cooldown == 0.0          # the successes ended it
+    assert c.throttled == 3 and c.calls == 5
+    # the burst of two sets one 7 s pause (retry-after); the throttle right after the pause, with
+    # no success in between, doubles it to 14 s; the successes end it
+    assert c._cooldown == 0.0
     assert sleeps and max(sleeps) >= 14.0 and all(s >= 7.0 for s in sleeps)
+    assert sum(1 for s in sleeps if s >= 14.0) <= 2         # one escalation, not one per throttle

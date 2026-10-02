@@ -241,6 +241,7 @@ class VLMClient:
         self.max_throttle_retries = 12
         self._cooldown = 0.0
         self._cooldown_until = 0.0
+        self._ok_since_pause = True
         self.timeout = timeout
         self.max_attempts = max_attempts
         self.calls = 0          # real API requests (incl. throttled ones)
@@ -361,6 +362,7 @@ class VLMClient:
                     if self.cache_get(image_key) is None:
                         self.cache_put(image_key, text)
                     self._cooldown = 0.0
+                    self._ok_since_pause = True
                     return text, False
             except (httpx.HTTPError, ValueError, KeyError, TypeError) as e:
                 last_err = e
@@ -373,11 +375,20 @@ class VLMClient:
         raise RuntimeError(f"VLM failed after {self.max_attempts} attempts: {last_err}")
 
     def _throttled_now(self, retry_after: float) -> None:
-        self._cooldown = min(COOLDOWN_MAX, max(retry_after, 5.0, 2 * self._cooldown))
-        until = time.monotonic() + self._cooldown + random.random()
-        if until > self._cooldown_until:
-            self._cooldown_until = until
-            log.info("rate limited (HTTP 429): pausing requests for %.0f s", self._cooldown)
+        """One pause per burst: throttles that arrive while a pause is already set are mates of
+        the same burst (the limiter has shrunk for them). The pause doubles only when the
+        previous one ended and the very next request was throttled again without any success
+        in between; a success resets it to the server's retry-after."""
+        now = time.monotonic()
+        if now < self._cooldown_until:
+            return
+        if self._ok_since_pause or self._cooldown == 0:
+            self._cooldown = max(retry_after, 5.0)
+        else:
+            self._cooldown = min(COOLDOWN_MAX, 2 * self._cooldown)
+        self._ok_since_pause = False
+        self._cooldown_until = now + self._cooldown + random.random()
+        log.info("rate limited (HTTP 429): pausing requests for %.0f s", self._cooldown)
 
     async def _wait_cooldown(self) -> None:
         while True:
