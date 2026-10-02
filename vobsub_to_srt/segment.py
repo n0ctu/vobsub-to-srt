@@ -251,8 +251,30 @@ def _strip_underlines(band: np.ndarray) -> tuple[np.ndarray, list[tuple[int, int
     return out, merged
 
 
+SPECK_MIN_H = 16      # despeckle only fonts whose tallest piece is at least this high (tiny fonts' dots stay)
+
+
+def despeckle(mask: np.ndarray) -> np.ndarray:
+    """Drop single stray pixels on the mask's top row or left column. Some authorings set the
+    first pixel of every cue image to the fill colour (an encoding artefact); after cropping it
+    sits on the mask's edge, and as a one-pixel glyph it broke the alignment of every cue. Two-
+    pixel components are never touched: in small fonts they are the dots of i, ! and the ellipsis."""
+    if mask.size == 0:
+        return mask
+    lab, n = ndimage.label(mask, structure=_EIGHT)
+    if n < 2:
+        return mask
+    objs = ndimage.find_objects(lab)
+    sizes = ndimage.sum(mask, lab, index=np.arange(1, n + 1))
+    if sizes.min() > 1 or max(s[0].stop - s[0].start for s in objs) < SPECK_MIN_H:
+        return mask
+    specks = [k + 1 for k, s in enumerate(objs) if sizes[k] == 1 and (s[0].start == 0 or s[1].start == 0)]
+    return mask & ~np.isin(lab, specks) if specks else mask
+
+
 def segment(mask: np.ndarray) -> list[Line]:
     lines: list[Line] = []
+    mask = despeckle(mask)
     for y0, y1 in split_lines(mask):
         band, underlines = _strip_underlines(mask[y0:y1])
         lab, n = ndimage.label(band, structure=_EIGHT)

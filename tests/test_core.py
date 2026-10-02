@@ -614,3 +614,16 @@ def test_fill_values_heavy_font_and_sparse_outline():
         img[4, x0 + 3:x0 + 6] = 2                         # a few ring pixels only
     cue = Cue(0, 0, 1000, img, [(0, 0, 0), (240, 240, 240), (153, 153, 153), (0, 0, 0)], [0, 15, 15, 15])
     assert fill_values(cue) == [1]
+
+
+def test_stray_pixels_are_dropped_before_segmentation():
+    """An authoring that sets the first pixel of every cue image to the fill colour must not
+    produce a one-pixel glyph (it broke the alignment of every cue). Tiny fonts keep their dots."""
+    from vobsub_to_srt.segment import despeckle
+    m = render("Take it")
+    m[0, 0] = True
+    assert len(segment(m)[0].glyphs) == len(segment(render("Take it"))[0].glyphs)
+    assert not despeckle(m)[0, 0]
+    tiny = np.zeros((9, 20), bool)                  # a 9 px font: its i-dot is one pixel
+    tiny[3:9, 2:4] = True; tiny[0, 2] = True; tiny[3:9, 8:12] = True
+    assert despeckle(tiny).sum() == tiny.sum()
