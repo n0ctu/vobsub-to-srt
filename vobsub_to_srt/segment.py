@@ -426,7 +426,10 @@ def bold_votes(all_lines: list[list[Line]], gap_threshold: float,
         if sum(int(g.bits.sum()) for g in w) < mi:
             strokes.append(None)       # too little ink (punctuation, tiny words)
         else:
-            strokes.append(float(np.median(np.concatenate([_stroke_samples(g) for g in w]))))
+            # the mean, not the median: ridge values are quantised (a 5 px stroke measures 4 or 6),
+            # and a word's median flips between the two, which read as bold in 40% of the words
+            # of a regular 720p font; the mean stays put
+            strokes.append(float(np.mean(np.concatenate([_stroke_samples(g) for g in w]))))
     valid = [x for x in strokes if x is not None]
     if not valid:
         return {}

@@ -644,3 +644,31 @@ def test_stacked_sequence_rule_does_not_read_an_ellipsis():
         db.add_sequence(stacked, ":")
     assert db.seq_label(stacked) == ":"
     assert db.seq_label(side) is None
+
+
+def test_bold_votes_separate_weights_and_stay_quiet_on_regular_text():
+    """Words of a bold face vote bold, regular words regular; a regular-only text at a size whose
+    stroke width is quantised (measured as 4 or 6 px) must not produce bold votes."""
+    import pytest
+    from vobsub_to_srt.segment import bold_votes
+    try:
+        bold = ImageFont.truetype("DejaVuSans-Bold.ttf", 40)
+        regular = ImageFont.truetype("DejaVuSans.ttf", 40)
+    except OSError:
+        pytest.skip("DejaVu fonts not installed")
+    def render_font(text, font):
+        im = Image.new("L", (40 + 40 * len(text), 70), 0)
+        ImageDraw.Draw(im).text((10, 10), text, fill=255, font=font)
+        return np.array(im) > 127
+    lines = [segment(render_font("wenn mann", regular)), segment(render_font("wenn mann", bold)),
+             segment(render_font("Hallo Welt", regular)), segment(render_font("nummer eins", regular))]
+    votes = bold_votes(lines, 12)
+    keys_bold = {g.key for l in lines[1] for g in l.glyphs}
+    keys_reg = {g.key for ls in (lines[0], lines[2], lines[3]) for l in ls for g in l.glyphs}
+    assert all(votes[k][1] > 0 for k in keys_bold if k in votes)
+    assert all(votes[k][1] == 0 for k in keys_reg if k in votes)
+    # regular-only text at several sizes: never a bold vote
+    for size in (23, 27, 31, 35):
+        f = ImageFont.truetype("DejaVuSans.ttf", size)
+        ls = [segment(render_font(w, f)) for w in ("want to be", "on Chucky", "Previously", "Jennifer", "Tiffany")]
+        assert all(v[1] == 0 for v in bold_votes(ls, 10).values()), size
