@@ -124,7 +124,7 @@ def known_coverage(groups: list[dict], memory: Path) -> None:
             c = sum(n for k, n in g["keys"].items() if k in db.shapes) / total
             if c > cov:
                 best, cov = db.name, c
-        g["known_db"], g["known_coverage"] = best, round(cov, 3)
+        g["known_db"], g["known_coverage"] = (best, round(cov, 3)) if cov >= 0.05 else ("", 0.0)   # below that it is noise (shared punctuation)
 
 
 def main() -> None:
