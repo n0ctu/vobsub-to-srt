@@ -134,3 +134,25 @@ def test_waiting_jobs_learn_their_position(client, monkeypatch):
     assert q[0]["position"] == 1 and q[0]["ahead"] == 1 and q[0]["running"]["cues"] == 5
     assert q[-1]["ahead"] == 0                      # the job ahead finished: next in line
     assert events[-1]["event"] == "done"
+
+
+def test_glyph_inventory(client):
+    from vobsub_to_srt.glyphdb import GlyphDB
+    import numpy as np
+    assert client.get("/api/glyphs").json() == {"sets": []}
+    gm = web.DATA / "glyph-memory"; gm.mkdir()
+    db = GlyphDB("quiet-heron-1a2b", gm / "quiet-heron-1a2b.json")
+    bits = np.ones((5, 3), bool)
+    for _ in range(2):                                   # two reads confirm a label
+        db.add_vote("k-H", bits, 0, "H", "i")
+    db.add_vote("k-x", np.ones((3, 3), bool), 2, "x", "")   # one read: unconfirmed
+    db.save()
+    sets = client.get("/api/glyphs").json()["sets"]
+    assert len(sets) == 1 and sets[0]["name"] == "quiet-heron-1a2b" and sets[0]["shapes"] == 2 and sets[0]["clusters"] == 2
+    inv = client.get("/api/glyphs/quiet-heron-1a2b").json()
+    assert inv["shapes"] == 2 and inv["unconfirmed"] == 1 and [g["label"] for g in inv["items"]] == ["H"]
+    g = inv["items"][0]
+    assert g["w"] == 3 and g["h"] == 5 and g["n"] >= 1 and g["members"] == 1 and "bits" in g
+    assert client.get("/api/glyphs/does-not-exist").status_code == 404
+    assert client.get("/api/glyphs/..%2Fstats").status_code == 404
+    assert client.get("/api/glyphs/.hidden").status_code == 404

@@ -118,6 +118,34 @@ def glyph_items(db: GlyphDB, glyphs: dict, keyfreq: Counter) -> dict[str, dict]:
     return out
 
 
+def glyph_inventory(db: GlyphDB) -> dict:
+    """Everything a glyph set has learned, for review: one entry per cluster with a trusted label
+    {key, label, style, w, h, bits, n (occurrences over all files), members, proto}, sorted by
+    frequency, plus counts of clusters still unconfirmed. Private data (word memory, sources,
+    per-pixel training counts) is not part of it."""
+    items: list[dict] = []
+    unconfirmed = 0
+    members: Counter = Counter()
+    occ: Counter = Counter()
+    for s in db.shapes.values():
+        members[s.cluster] += 1
+        occ[s.cluster] += s.n
+    for key, s in db.shapes.items():
+        if s.cluster != key:
+            continue
+        best = max(s.variants, key=lambda v: sum(v.votes.values()), default=None)
+        label = _decide(best, db)[0] if best else None
+        if not label:
+            unconfirmed += 1
+            continue
+        items.append({"key": key, "label": label, "style": best.style(), "w": int(s.bits.shape[1]), "h": int(s.bits.shape[0]),
+                      "bits": base64.b64encode(np.packbits(s.bits).tobytes()).decode(),
+                      "n": int(occ[key]), "members": int(members[key]), "proto": key in db.protos})
+    items.sort(key=lambda it: -it["n"])
+    return {"name": db.name, "unit": db.unit, "charset": db.charset, "parent": db.parent,
+            "items": items, "unconfirmed": unconfirmed, "shapes": len(db.shapes)}
+
+
 def image_id(mask: np.ndarray) -> str:
     h = hashlib.blake2b(digest_size=8)
     h.update(np.array(mask.shape, np.int32).tobytes())
@@ -502,10 +530,19 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
         await _vlm_batch(states, vlm_cue, apply_vlm, failures, "vlm", **hooks("inference"), **sheet_kw)
     else:
         rounds = 0
+        last_flush = [time.time()]
+
+        def flush_live(n: int) -> None:
+            """The matching pass over a long file is pure CPU work; the live transcript grows
+            every ten cues or every second instead of once at the end of the pass."""
+            if n % 10 == 0 or time.time() - last_flush[0] >= 1.0:
+                last_flush[0] = time.time()
+                flush_cues()
+
         for recheck in range(4):
             while True:
                 unresolved = []
-                for st in states:
+                for n, st in enumerate(states, 1):
                     if st.text is not None or st.cue.index in failures:
                         continue
                     st.result = recognize(db, st.lines, lexicon=lexicon)
@@ -513,6 +550,7 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
                         st.text = st.result.text()
                         st.source = "nocr"
                         stats["nocr"] += 1
+                        flush_live(n)
                     else:
                         unresolved.append(st)
                 flush_cues()

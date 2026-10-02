@@ -217,22 +217,53 @@ def glyph_stats() -> dict:
         return _glyph_cache["value"]
     baseline = {f.name for f in BASELINE_DIR.glob("*.json")} if BASELINE_DIR.is_dir() else set()
     shapes = italic = fused = 0
+    sets: list[dict] = []
     for f in files:
         try:
             d = json.loads(f.read_text())
         except (OSError, ValueError):
             continue
+        n_shapes = n_clusters = 0
         for sh in d.get("shapes", []):
             shapes += 1
+            n_shapes += 1
+            n_clusters += not sh.get("cluster")
             for v in sh.get("variants", []):
                 if v.get("geo_italic", [0, 0])[1] > v.get("geo_italic", [0, 0])[0]:
                     italic += 1
                     break
             if any(len(lab) > 1 for v in sh.get("variants", []) for lab in v.get("votes", {})):
                 fused += 1
+        sets.append({"name": f.stem, "shapes": n_shapes, "clusters": n_clusters, "unit": d.get("unit"),
+                     "updated": int(f.stat().st_mtime), "baseline": f.name in baseline})
+    sets.sort(key=lambda s: -s["updated"])
     value = {"fonts": len(files), "fonts_learned_here": sum(1 for f in files if f.name not in baseline),
-             "shapes": shapes, "italic_shapes": italic, "fused_shapes": fused}
+             "shapes": shapes, "italic_shapes": italic, "fused_shapes": fused, "sets": sets}
     _glyph_cache.update(key=key, value=value)
+    return value
+
+
+_inventory_cache: dict[str, tuple[int, dict]] = {}
+
+
+def glyph_inventory(name: str) -> dict | None:
+    """The reviewable content of one glyph set (see pipeline.glyph_inventory), cached per file version."""
+    if not name or _STEM.search(name) or name.startswith("."):
+        return None
+    path = DATA / "glyph-memory" / f"{name}.json"
+    if not path.is_file():
+        return None
+    stamp = path.stat().st_mtime_ns
+    hit = _inventory_cache.get(name)
+    if hit and hit[0] == stamp:
+        return hit[1]
+    from .glyphdb import GlyphDB
+    from .pipeline import glyph_inventory as inventory
+    value = inventory(GlyphDB.load(path))
+    value["updated"] = int(path.stat().st_mtime)
+    if len(_inventory_cache) >= 8:                 # a handful of recently viewed sets
+        _inventory_cache.pop(next(iter(_inventory_cache)))
+    _inventory_cache[name] = (stamp, value)
     return value
 
 
@@ -379,7 +410,21 @@ async def stats():
             "running": sum(1 for j in jobs.values() if j.status == "running"),
             "limits": {"jobs_per_hour": JOBS_PER_HOUR, "vlm_per_day": VLM_PER_DAY, "max_vlm_cues": MAX_VLM_CUES,
                        "max_cues": MAX_CUES, "job_ttl": JOB_TTL},
-            "usage": store.snapshot(), "glyphs": g}
+            "usage": store.snapshot(), "glyphs": {k: v for k, v in g.items() if k != "sets"}}
+
+
+@app.get("/api/glyphs")
+async def glyph_sets():
+    """The glyph sets in memory, newest first (what the converter has learned so far)."""
+    return {"sets": glyph_stats()["sets"]}
+
+
+@app.get("/api/glyphs/{name}")
+async def glyph_set(name: str):
+    inv = await asyncio.to_thread(glyph_inventory, name)
+    if inv is None:
+        raise HTTPException(404, "unknown glyph set")
+    return inv
 
 
 @app.get("/healthz")

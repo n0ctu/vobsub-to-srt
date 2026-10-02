@@ -124,6 +124,8 @@ Jobs run in `VTS_WORKERS` worker processes. The web process owns the queue and h
 
 Everything a user uploads stays in memory: uploads are dropped when their job ran, results are held in memory for `VTS_JOB_TTL` (10 min) so the browser can fetch them, the VLM cache is per job. Only the shared `glyph-memory/` grows. Limits and usage statistics live in `<data>/stats.sqlite`; clients are identified by a salted hash of their address whose salt changes daily.
 
+The page's "Glyph memory" section lists every glyph set learned so far and renders one on request (bitmap, reading, style, how often it was seen), so what the shared memory holds is open to review: `GET /api/glyphs` and `GET /api/glyphs/<set>` return the same data. Private sidecar data (word memory, learned image hashes, per-pixel training counts) is never served.
+
 | Variable | Default | |
 |---|---|---|
 | `VTS_DATA` | `.` (`/data` in Docker) | glyph memory, word memory, dictionaries, `stats.sqlite` |
