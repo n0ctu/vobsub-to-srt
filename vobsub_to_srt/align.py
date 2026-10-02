@@ -138,9 +138,8 @@ def align_line(db: GlyphDB, line: Line, styled: list[tuple[str, bool]], gap_thre
         # as one, so parts that are unknown or punctuation may form any punctuation character.
         letters = any(trusted[t] and trusted[t] not in PUNCT for t in range(i, i + s))
         if letters or all(known[i:i + s]):
-            seq = db.sequences.get(db.seq_key(gl[i:i + s]))
             together = "".join(known[t] or "\0" for t in range(i, i + s))
-            combined = (trusted_label(seq)[0] if seq else None) or COMBINE.get(together, together)
+            combined = db.seq_label(gl[i:i + s]) or COMBINE.get(together, together)
             if combined != chars[j] and (letters or chars[j] not in PUNCT):
                 return INF
         span = gl[i + s - 1].right - gl[i].x
@@ -204,8 +203,7 @@ def align_line(db: GlyphDB, line: Line, styled: list[tuple[str, bool]], gap_thre
         if i1 - i0 == 1:
             lab = strong[i0]
         else:   # several glyphs for one char: trusted sequence rule, else their confirmed labels
-            seq = db.sequences.get(db.seq_key(gl[i0:i1]))
-            lab = trusted_label(seq)[0] if seq else None
+            lab = db.seq_label(gl[i0:i1])
             parts = [strong[t] or unanimous[t] for t in range(i0, i1)]
             if lab is None and any(strong[i0:i1]) and all(parts):
                 lab = COMBINE.get("".join(parts), "".join(parts))
@@ -401,7 +399,7 @@ def learn_cue(db: GlyphDB, lines: list[Line], vlm_text: str, gap_threshold: floa
                 db.add_vote(g.key, g.bits, g.top_rel, mp.text, mp.style, once=seen)
             else:
                 keys = [gl[t].key for t in range(s0, s1)]
-                if (tuple(keys), mp.text) not in seen:
+                if (tuple(keys), mp.text) not in seen and not db.dropping_sequence(gl[s0:s1], mp.text):
                     seen.add((tuple(keys), mp.text))
                     db.add_sequence(gl[s0:s1], mp.text)
         # gaps between mappings

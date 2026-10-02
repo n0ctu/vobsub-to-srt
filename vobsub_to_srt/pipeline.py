@@ -555,6 +555,35 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
                         unresolved.append(st)
                 flush_cues()
                 flush_glyphs()
+                if unresolved and client is not None and opts.low_confidence == "accept":
+                    # An image the memory already learned from cannot teach anything a second
+                    # time (its votes would not count), so asking the model again only costs a
+                    # request: a re-upload reads those cues from what the first pass taught, with
+                    # glyphs confirmed only once marked low-confidence as in the teacher-less path.
+                    still = []
+                    for st in unresolved:
+                        tent = None
+                        if image_id(st.mask) in db.learned_sources:
+                            tent = recognize(db, st.lines, learn_near=False, lexicon=lexicon, tentative=True)
+                        if tent is None or not tent.ok:
+                            still.append(st)
+                            continue
+                        st.text = tent.text()
+                        if tent.low_confidence():
+                            st.source = "tentative"
+                            stats["tentative"] += 1
+                            flagged.setdefault(st.cue.index, []).append(
+                                "low confidence: " + ", ".join(sorted(set(repr(t) for t in tent.low_confidence())))
+                                + " seen once before (image learned earlier, model not asked again)")
+                        else:
+                            st.source = "nocr"
+                            stats["nocr"] += 1
+                        stats["learned_image_skipped"] += 1
+                    if len(still) != len(unresolved):
+                        log.info("%d cues whose image was learned before are read from memory instead of asked again",
+                                 len(unresolved) - len(still))
+                        unresolved = still
+                        flush_cues()
                 if not unresolved or opts.mode == "nocr-only":
                     break
                 if budget_left() == 0:

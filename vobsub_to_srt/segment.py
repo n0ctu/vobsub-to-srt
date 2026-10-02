@@ -59,7 +59,10 @@ def fill_values(cue: Cue) -> list[int]:
         stats[v] = {"n": n, "hist": hist, "density": n / bbox}
     if not stats:
         return []
-    cand = {v: st for v, st in stats.items() if st["density"] < MAX_DENSITY} or stats
+    # a backdrop is dense AND one piece (a box with the text punched out); a heavy font fills
+    # half of its bounding box too, but as many pieces (its letters)
+    cand = {v: st for v, st in stats.items()
+            if st["density"] < MAX_DENSITY or ndimage.label(img == v)[1] > 2} or stats
     backdrop = [v for v in stats if v not in cand]       # a box behind the text acts as background
     for st in cand.values():
         exposed = st["hist"][0] + st["hist"][4] + sum(st["hist"][v] for v in backdrop)
@@ -67,8 +70,13 @@ def fill_values(cue: Cue) -> list[int]:
     outline = max(cand, key=lambda v: cand[v]["exposure"])
     inner = {v: st for v, st in cand.items() if v != outline and st["exposure"] < MAX_EXPOSURE}
     if not inner:
-        # no outline layout: the fill itself faces transparency; take the least exposed colour
-        keep = [min(cand, key=lambda v: cand[v]["exposure"])]
+        # no outline layout (or an outline so sparse that the fill touches the backdrop itself):
+        # thin colours are anti-alias rings when a thicker one exists; of the rest, the fill is
+        # the colour facing transparency the least. Border contacts do not count here: a tight
+        # crop lets the fill touch the image edge.
+        thin = {v: int(st["hist"].sum()) / st["n"] for v, st in cand.items()}
+        thick = [v for v in cand if thin[v] <= RING_THIN] or [min(cand, key=thin.get)]
+        keep = [min(thick, key=lambda v: cand[v]["hist"][0] / max(int(cand[v]["hist"].sum()), 1))]
     else:
         thin = {v: int(st["hist"].sum()) / st["n"] for v, st in inner.items()}
         contact = {v: st["hist"][outline] / max(int(st["hist"].sum()), 1) for v, st in inner.items()}

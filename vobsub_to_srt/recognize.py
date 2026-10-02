@@ -293,9 +293,7 @@ def recognize_line(db: GlyphDB, line: Line, learn_near: bool = True, lexicon=Non
         seq_hit = None
         for k in (3, 2):
             if i + k <= len(gl):
-                key = db.seq_key(gl[i:i + k])
-                votes = db.sequences.get(key)
-                label = trusted_label(votes)[0] if votes else None
+                label = db.seq_label(gl[i:i + k])
                 max_gap = 0.25 * (line.y1 - line.y0)
                 if label is not None and all(line.gaps[i + t] <= max_gap for t in range(k - 1)):
                     seq_hit = (k, label)

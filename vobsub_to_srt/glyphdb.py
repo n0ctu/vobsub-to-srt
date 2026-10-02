@@ -546,6 +546,30 @@ class GlyphDB:
         return "|".join(self.soft_canonical(g.key, g.bits, g.top_rel) if self._is_seq_part(g.bits) else
                         self.canonical(g.key) for g in glyphs)
 
+    def part_labels(self, glyphs) -> list[str | None]:
+        """Each glyph's own trusted label (None if unknown or unconfirmed)."""
+        out = []
+        for g in glyphs:
+            v = self.lookup(g.key, g.top_rel)
+            out.append(trusted_label(v.votes)[0] if v is not None and v.votes else None)
+        return out
+
+    def dropping_sequence(self, glyphs, label: str) -> bool:
+        """A rule that reads several glyphs, each confirmed as a character of its own, as fewer
+        copies of one of them ('.' '.' -> '.') only records that the vision model miscounted a run
+        (two dots of an ellipsis). Two ticks forming a quote or three dots forming an ellipsis
+        character are different characters and stay allowed."""
+        parts = self.part_labels(glyphs)
+        return all(parts) and len(label) < len(glyphs) and label in parts
+
+    def seq_label(self, glyphs) -> str | None:
+        """Trusted label of the stored sequence these glyphs form, if any (see dropping_sequence)."""
+        votes = self.sequences.get(self.seq_key(glyphs))
+        label = trusted_label(votes)[0] if votes else None
+        if label is not None and self.dropping_sequence(glyphs, label):
+            return None
+        return label
+
     def add_sequence(self, glyphs, label: str) -> None:
         """The glyphs together spell `label`. Each part is stored (and clustered) without a label
         of its own, so jittered parts are recognised as the same sequence later."""

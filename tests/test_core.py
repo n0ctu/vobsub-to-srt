@@ -570,3 +570,47 @@ def test_once_seen_glyphs_are_read_tentatively_without_a_model(tmp_path):
     tent = recognize(db, lines, learn_near=False, tentative=True)
     assert tent.ok and tent.text() == "abc" and sorted(tent.low_confidence()) == ["a", "b", "c"]
     assert not any(it.low for it in res.lines[0].items)
+
+
+def test_dropping_sequence_rules_are_ignored_and_not_learned():
+    """Two dots read as one dot only records that the model miscounted an ellipsis: such a rule
+    is neither applied nor learned. Two ticks forming a quote stay a legitimate sequence."""
+    db = GlyphDB("t")
+    lines = segment(render("a . . . b"))
+    gl = lines[0].glyphs
+    dots = [g for g in gl if g.bits.shape[0] <= 8]
+    assert len(dots) == 3
+    for _ in range(3):                                   # the dot is a confirmed glyph of its own
+        for g in dots:
+            db.add_vote(g.key, g.bits, g.top_rel, ".", "")
+    assert db.dropping_sequence(dots[:2], ".")           # '.' '.' -> '.' drops a glyph
+    assert not db.dropping_sequence(dots[:2], "…")       # a different character: allowed
+    assert not db.dropping_sequence(dots[:3], "...")     # same length: nothing dropped
+    db.sequences[db.seq_key(dots[:2])] = __import__("collections").Counter({".": 5})
+    assert db.seq_label(dots[:2]) is None                # the stored rule is ignored
+    items = recognize(db, lines, learn_near=False).lines[0]
+    assert [it.text for it in items.items].count(".") == 3          # three dots, one glyph each
+    assert all(b - a == 1 for a, b in items.glyph_spans)
+
+
+def test_fill_values_heavy_font_and_sparse_outline():
+    """A heavy font fills half of its bounding box but comes as many pieces: not a backdrop. When
+    the outline is a solid box and the anti-alias ring is sparse, the thick colour is the fill."""
+    import numpy as np
+    from vobsub_to_srt.segment import fill_values
+    from vobsub_to_srt.vobsub import Cue
+    # heavy letters (value 1) with a one-pixel ring (2) and an outline (3) facing transparency (0)
+    img = np.zeros((20, 60), np.uint8)
+    for x0 in (4, 24, 44):                                # three fat blocks = three letters
+        img[3:17, x0:x0 + 12] = 3
+        img[4:16, x0 + 1:x0 + 11] = 2
+        img[5:15, x0 + 2:x0 + 10] = 1
+    cue = Cue(0, 0, 1000, img, [(0, 0, 0), (240, 240, 240), (153, 153, 153), (0, 0, 0)], [0, 15, 15, 15])
+    assert fill_values(cue) == [1]
+    # a black box (3) around the text, a ring too sparse to separate fill and box: the fill is 1
+    img = np.full((20, 60), 3, np.uint8)
+    for x0 in (4, 24, 44):
+        img[5:15, x0 + 2:x0 + 10] = 1
+        img[4, x0 + 3:x0 + 6] = 2                         # a few ring pixels only
+    cue = Cue(0, 0, 1000, img, [(0, 0, 0), (240, 240, 240), (153, 153, 153), (0, 0, 0)], [0, 15, 15, 15])
+    assert fill_values(cue) == [1]
