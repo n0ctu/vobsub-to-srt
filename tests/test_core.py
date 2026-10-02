@@ -627,3 +627,20 @@ def test_stray_pixels_are_dropped_before_segmentation():
     tiny = np.zeros((9, 20), bool)                  # a 9 px font: its i-dot is one pixel
     tiny[3:9, 2:4] = True; tiny[0, 2] = True; tiny[3:9, 8:12] = True
     assert despeckle(tiny).sum() == tiny.sum()
+
+
+def test_stacked_sequence_rule_does_not_read_an_ellipsis():
+    """A colon whose two dots did not merge is learned as a stacked sequence; two dots side by
+    side (an ellipsis) must not match that rule."""
+    from vobsub_to_srt.segment import Glyph
+    db = GlyphDB("t")
+    dot = np.ones((3, 3), bool)
+    stacked = [Glyph(10, 0, dot.copy()), Glyph(10, 8, dot.copy())]       # one above the other
+    side = [Glyph(10, 8, dot.copy()), Glyph(16, 8, dot.copy())]          # next to each other
+    for g in stacked + side:
+        from vobsub_to_srt.segment import glyph_key
+        g.key = glyph_key(g.bits)
+    for _ in range(3):
+        db.add_sequence(stacked, ":")
+    assert db.seq_label(stacked) == ":"
+    assert db.seq_label(side) is None

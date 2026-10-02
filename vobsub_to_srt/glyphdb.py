@@ -46,6 +46,14 @@ STRICT = set("Il|i1!jíìïî")   # punctuation is told apart by size and baseli
 _ALIGN = [(dy, dx) for dy in (0, 1, 2) for dx in (0, 1, 2)]   # the 3x3 alignments of a near comparison
 
 
+def _stacked(glyphs) -> bool:
+    """True if any two consecutive parts are vertically separated (one above the other).
+    Journal stand-ins carry the flag instead of a position."""
+    if any(not hasattr(g, "y") for g in glyphs):
+        return False
+    return any(a.y + a.bits.shape[0] <= b.y or b.y + b.bits.shape[0] <= a.y for a, b in zip(glyphs, glyphs[1:]))
+
+
 def diff_ratio(a: np.ndarray, b: np.ndarray) -> float:
     """Pixel difference of two bitmaps (best of 3x3 alignments) relative to their mean ink."""
     h, w = max(a.shape[0], b.shape[0]) + 2, max(a.shape[1], b.shape[1]) + 2
@@ -540,11 +548,16 @@ class GlyphDB:
             self._seq_sizes_cache, self._seq_n = sizes, len(self.sequences)
         return sizes
 
-    def seq_key(self, glyphs) -> str:
+    def seq_key(self, glyphs, stacked: bool | None = None) -> str:
         """Key of a multi-glyph character (two ticks -> '"', three dots -> ...), by cluster.
-        Glyphs that cannot be part of any stored sequence keep their own key (no search)."""
-        return "|".join(self.soft_canonical(g.key, g.bits, g.top_rel) if self._is_seq_part(g.bits) else
-                        self.canonical(g.key) for g in glyphs)
+        Glyphs that cannot be part of any stored sequence keep their own key (no search).
+        Parts stacked on top of each other (a colon whose dots did not merge) are marked, so
+        the same two dots side by side (an ellipsis) never match a stacked rule."""
+        key = "|".join(self.soft_canonical(g.key, g.bits, g.top_rel) if self._is_seq_part(g.bits) else
+                       self.canonical(g.key) for g in glyphs)
+        if stacked is None:
+            stacked = _stacked(glyphs)
+        return key + "^" if stacked else key
 
     def part_labels(self, glyphs) -> list[str | None]:
         """Each glyph's own trusted label (None if unknown or unconfirmed)."""
@@ -570,13 +583,15 @@ class GlyphDB:
             return None
         return label
 
-    def add_sequence(self, glyphs, label: str) -> None:
+    def add_sequence(self, glyphs, label: str, stacked: bool | None = None) -> None:
         """The glyphs together spell `label`. Each part is stored (and clustered) without a label
         of its own, so jittered parts are recognised as the same sequence later."""
-        self._log("seq", [(g.key, g.bits, g.top_rel) for g in glyphs], label)
+        if stacked is None:
+            stacked = _stacked(glyphs)
+        self._log("seq", [(g.key, g.bits, g.top_rel) for g in glyphs], label, stacked)
         for g in glyphs:
             self.place(g.key, g.bits, g.top_rel)
-        self.sequences.setdefault(self.seq_key(glyphs), Counter())[label] += 1
+        self.sequences.setdefault(self.seq_key(glyphs, stacked), Counter())[label] += 1
         self.dirty = True
 
     def add_word(self, keys: list[str], text: str) -> None:
@@ -808,7 +823,7 @@ class GlyphDB:
                     shape = self.place(key, bits, top_rel, label, derived_from)
                     self.shapes[shape.cluster].variant(top_rel, self.pos_tol, create=True)
                 elif kind == "seq":
-                    self.add_sequence([_Part(k, b, t) for k, b, t in op[1]], op[2])
+                    self.add_sequence([_Part(k, b, t) for k, b, t in op[1]], op[2], op[3] if len(op) > 3 else False)
                 elif kind == "gap":
                     self.add_gap(*op[1:])
                 elif kind == "prior":
