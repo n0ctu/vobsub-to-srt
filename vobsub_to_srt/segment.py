@@ -227,11 +227,44 @@ def split_lines(mask: np.ndarray) -> list[tuple[int, int]]:
     return bands
 
 
-def _merge_components(boxes: list[list[int]]) -> list[list[int]]:
+SLANT_MIN = 0.1        # a body leaning at least this much (dx per row) projects its edge towards a dot
+DOT_SHARE = 0.5        # ... which must then overlap the projected edge by this share of its width
+
+
+def _slanted_overlap(part: dict, body: dict, lab: np.ndarray) -> bool:
+    """Does `part` (a dot-sized piece above or below `body`) sit where the body's slanted stem
+    would continue? In italic fonts the dot of i, j and ! is displaced along the slant, so its
+    box barely overlaps the stem's box (one pixel for a 12 degree lean at 20 px). The stem's
+    lean is measured on its own pixels and its facing edge is projected up (or down) to the
+    part; the part must cover DOT_SHARE of its own width with that projected edge."""
+    px0, px1, py0, py1 = part["box"]
+    bx0, bx1, by0, by1 = body["body"]
+    bh, pw = by1 - by0, px1 - px0
+    if py1 - py0 > 0.4 * bh or pw > bh or bh < 6:
+        return False
+    pix = lab[by0:by1, bx0:bx1] == body["body_label"]
+    rows = [np.flatnonzero(r) for r in pix]
+    if not rows[0].size or not rows[-1].size:
+        return False
+    k = max(1, bh // 6)
+    top = np.concatenate(rows[:k]); bottom = np.concatenate(rows[-k:])
+    slope = (top.mean() - bottom.mean()) / max(1, bh - k)        # +: leans right (italic)
+    if abs(slope) < SLANT_MIN:
+        return False
+    above = py1 <= by0
+    edge = rows[0] if above else rows[-1]
+    dy = (by0 - (py0 + py1) / 2) if above else (by1 - 1 - (py0 + py1) / 2)
+    ex0, ex1 = bx0 + edge.min() + slope * dy, bx0 + edge.max() + 1 + slope * dy
+    return min(px1, ex1) - max(px0, ex0) >= DOT_SHARE * pw
+
+
+def _merge_components(boxes: list[list[int]], lab: np.ndarray | None = None) -> list[list[int]]:
     """boxes: [x0, x1, y0, y1, label]. Merge vertically separate parts that overlap in x
     (i/j dots, umlauts, accents, ':' ';' '!' '?'). Separation is tested against each group's
-    tallest part (its body), so a second umlaut dot still merges after the first one did."""
-    groups = [{"box": b[:4], "body": b[:4], "labels": b[4:]} for b in sorted(boxes, key=lambda b: b[0])]
+    tallest part (its body), so a second umlaut dot still merges after the first one did.
+    With the label image, a dot displaced along an italic stem's slant merges as well."""
+    groups = [{"box": b[:4], "body": b[:4], "body_label": b[4], "labels": b[4:]}
+              for b in sorted(boxes, key=lambda b: b[0])]
     merged = True
     while merged:
         merged = False
@@ -239,16 +272,19 @@ def _merge_components(boxes: list[list[int]]) -> list[list[int]]:
             for j in range(i + 1, len(groups)):
                 a, b = groups[i], groups[j]
                 ov = min(a["box"][1], b["box"][1]) - max(a["box"][0], b["box"][0])
-                if ov <= 0:
-                    continue
                 narrow = min(a["box"][1] - a["box"][0], b["box"][1] - b["box"][0])
+                if ov <= (0 if lab is None else -narrow):     # a slanted dot may clear the stem's box
+                    continue
                 ab, bb = a["body"], b["body"]
                 vsep = ab[3] <= bb[2] or bb[3] <= ab[2]
-                if vsep and ov >= 0.3 * narrow:
-                    body = ab if ab[3] - ab[2] >= bb[3] - bb[2] else bb
+                if not vsep:
+                    continue
+                tall, part = (a, b) if ab[3] - ab[2] >= bb[3] - bb[2] else (b, a)
+                if ov >= 0.3 * narrow or (lab is not None and _slanted_overlap(part, tall, lab)):
                     box = [min(a["box"][0], b["box"][0]), max(a["box"][1], b["box"][1]),
                            min(a["box"][2], b["box"][2]), max(a["box"][3], b["box"][3])]
-                    groups[i] = {"box": box, "body": body, "labels": a["labels"] + b["labels"]}
+                    groups[i] = {"box": box, "body": tall["body"], "body_label": tall["body_label"],
+                                 "labels": a["labels"] + b["labels"]}
                     del groups[j]
                     merged = True
                     break
@@ -366,7 +402,7 @@ def segment(mask: np.ndarray, bridge: np.ndarray | None = None) -> list[Line]:
             continue
         slices = ndimage.find_objects(lab)
         boxes = [[s[1].start, s[1].stop, s[0].start, s[0].stop, k + 1] for k, s in enumerate(slices)]
-        boxes = _merge_components(boxes)
+        boxes = _merge_components(boxes, lab)
         line = Line(y0, y1, underlines=underlines)
         for x0, x1, gy0, gy1, *labels in boxes:
             sub = np.isin(lab[gy0:gy1, x0:x1], labels)

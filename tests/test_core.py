@@ -728,3 +728,20 @@ def test_stray_vote_does_not_hide_an_i_l_pair():
     assert _decide(Variant(-22, Counter({"I": 1, "l": 1}))) == (None, "ambiguous I/l")     # small clusters unchanged
     assert _decide(Variant(-22, Counter({"e": 40, "c": 1})))[0] == "e"
     assert _decide(Variant(-22, Counter({"e": 5, "c": 5})))[0] is None                      # a real conflict stays one
+
+
+def test_italic_dot_displaced_along_slant_merges_into_stem():
+    """Italic i / ! : the dot sits along the slant, barely overlapping the stem's box."""
+    from vobsub_to_srt.segment import segment
+    m = np.zeros((30, 60), bool)
+    for r in range(8, 28):                 # a stem leaning right: 3 px wide, shifts 1 px per 3 rows
+        x = 10 + (27 - r) // 3
+        m[r, x:x + 3] = True
+    m[2:5, 18:22] = True                   # the dot, right of the stem's box top (16..19) by most of its width
+    for r in range(8, 28):                 # an upright 'l' further right, then an upright dot pair (umlaut) next to it
+        m[r, 36:39] = True
+    m[2:5, 42:46] = True                   # a dot that belongs to a neighbour: no slant, must stay separate
+    lines = segment(m)
+    assert len(lines) == 1
+    widths = sorted((g.x, g.bits.shape[0]) for g in lines[0].glyphs)
+    assert widths == [(10, 26), (36, 20), (42, 3)], widths
