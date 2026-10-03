@@ -199,3 +199,17 @@ def test_tolerant_stage_prefers_confirmed_cluster_over_unconfirmed_twin():
     assert db.canonical(conf.key) != db.canonical(twin.key)
     key, v, r = near_match(db, q)
     assert v is not None and v.votes["y"] == 3                      # read via the confirmed cluster
+
+
+def test_local_difference_separates_touching_letter_groups_but_not_jitter():
+    import numpy as np
+    from vobsub_to_srt.glyphdb import diff_ratio, local_diff_ratio, letters_in
+    rng = np.random.default_rng(1)
+    a = rng.random((30, 60)) < 0.5                  # a 60 px wide "three letter" glyph
+    b = a.copy()
+    b[:, 40:60] = rng.random((30, 20)) < 0.5        # a different third letter
+    assert local_diff_ratio(a, b) > 2 * diff_ratio(a, b)
+    j = a.copy()
+    j[::7, :] ^= True                               # jitter spread over the whole glyph
+    assert abs(local_diff_ratio(a, j) - diff_ratio(a, j)) < 0.02
+    assert letters_in("fte") == 3 and letters_in("...") == 0 and letters_in(None, 'r"') == 1

@@ -72,6 +72,37 @@ def diff_ratio(a: np.ndarray, b: np.ndarray) -> float:
     return best / max(1.0, (na + nb) / 2)
 
 
+def local_diff_ratio(a: np.ndarray, b: np.ndarray) -> float:
+    """Pixel difference relative to the ink in the columns where the two bitmaps differ (best of
+    3x3 alignments). Jitter touches every letter of a glyph, so this equals diff_ratio; a glyph of
+    several touching letters that differs from another in ONE letter ('fte' vs 'ffe') has its
+    difference concentrated in that letter's columns, and the ratio there is a letter's worth."""
+    h, w = max(a.shape[0], b.shape[0]) + 2, max(a.shape[1], b.shape[1]) + 2
+    A = np.zeros((h, w), bool)
+    A[1:1 + a.shape[0], 1:1 + a.shape[1]] = a
+    best = None
+    for dy in (0, 1, 2):
+        for dx in (0, 1, 2):
+            if dy + b.shape[0] > h or dx + b.shape[1] > w:
+                continue
+            B = np.zeros((h, w), bool)
+            B[dy:dy + b.shape[0], dx:dx + b.shape[1]] = b
+            D = A ^ B
+            d = int(D.sum())
+            if best is not None and d >= best[0]:
+                continue
+            cols = np.flatnonzero(D.any(axis=0))
+            if cols.size == 0:
+                return 0.0
+            local = (int(A[:, cols[0]:cols[-1] + 1].sum()) + int(B[:, cols[0]:cols[-1] + 1].sum())) / 2
+            best = (d, d / max(1.0, local))
+    return best[1] if best else 0.0
+
+
+def letters_in(*labels: str | None) -> int:
+    return max((sum(c.isalnum() for c in l) for l in labels if l), default=0)
+
+
 def is_strict(label: str | None) -> bool:
     return bool(label) and bool(set(label) & STRICT)
 
@@ -432,7 +463,8 @@ class GlyphDB:
             lab = self._label_of(shape, top_rel)
             if dh and (is_strict(label) or is_strict(lab)):
                 continue
-            if r <= tol_for(label, lab):
+            tol = tol_for(label, lab)
+            if r <= tol and (letters_in(label, lab) < 2 or local_diff_ratio(bits, shape.bits) <= tol):
                 cands.append((r, shape.cluster, lab))
         if not cands:
             return None

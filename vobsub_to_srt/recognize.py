@@ -9,7 +9,7 @@ from collections import Counter
 
 import re as _re
 
-from .glyphdb import (CLUSTER_TOL, OVERRIDE_SHARE, OVERRIDE_VOTES, PROTO_MARGIN, PROTO_MIN_PX, PROTO_STRICT_TOL, PROTO_TOL, TOLERANT_MARGIN,
+from .glyphdb import (CLUSTER_TOL, letters_in, local_diff_ratio, OVERRIDE_SHARE, OVERRIDE_VOTES, PROTO_MARGIN, PROTO_MIN_PX, PROTO_STRICT_TOL, PROTO_TOL, TOLERANT_MARGIN,
                       GlyphDB, Variant, diff_ratio, is_strict, tol_for, topology, trusted_label)
 from .styling import inherit_punct_styles, majority_style, render_styled
 from .segment import Glyph, Line
@@ -202,8 +202,9 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
             label = decided[id(v)] = _decide(v, db)[0]
         if label is None or label == "" or (dh and is_strict(label)):
             continue
-        if r <= tol_for(label):
-            cands.append((r, key, v, label))
+        tol = tol_for(label)
+        if r <= tol and (letters_in(label) < 2 or local_diff_ratio(g.bits, db.shapes[key].bits) <= tol):
+            cands.append((r, key, v, label))      # several touching letters: the difference may not sit in one of them
     if not cands and db.protos:
         # stage 1b: the cluster prototypes (median + stability mask, learned from every sample of
         # the letter in earlier files). Disagreements count on stable pixels only, so a jittered
