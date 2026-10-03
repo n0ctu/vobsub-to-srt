@@ -136,7 +136,10 @@ def align_line(db: GlyphDB, line: Line, styled: list[tuple[str, bool]], gap_thre
         # if the glyphs together spell the char (sequence rule, '' -> ", ... -> …). Punctuation
         # parts (ticks, dots) are different: a double quote is drawn as two ticks and often read
         # as one, so parts that are unknown or punctuation may form any punctuation character.
-        letters = any(trusted[t] and trusted[t] not in PUNCT for t in range(i, i + s))
+        # ... unless segmentation found the pieces physically joined through the anti-alias ring
+        # (a k whose stem alone reads as a confirmed l): then they may well be one character.
+        joined = bool(line.joined) and all(line.joined[t - 1] for t in range(i + 1, i + s))
+        letters = not joined and any(trusted[t] and trusted[t] not in PUNCT for t in range(i, i + s))
         if letters or all(known[i:i + s]):
             together = "".join(known[t] or "\0" for t in range(i, i + s))
             combined = db.seq_label(gl[i:i + s]) or COMBINE.get(together, together)
@@ -145,6 +148,8 @@ def align_line(db: GlyphDB, line: Line, styled: list[tuple[str, bool]], gap_thre
         span = gl[i + s - 1].right - gl[i].x
         c = 0.5 * abs(span - exp_w(chars[j])) / avg_w + 1.5 * (s - 1)
         for t in range(i, i + s):
+            if joined:
+                continue      # pieces of one broken letter: no letter is being swallowed
             if strong[t]:
                 c += 4.0      # swallowing a confirmed glyph: the VLM most likely dropped a character
             elif known[t]:

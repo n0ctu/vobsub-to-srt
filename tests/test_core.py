@@ -687,3 +687,32 @@ def test_fill_values_drop_shadow_authoring():
         img[6:16, x0 + 1:x0 + 11] = 1            # fill
     cue = Cue(0, 0, 1000, img, [(0, 0, 0), (204, 204, 204), (153, 153, 153), (0, 0, 0)], [0, 15, 15, 15])
     assert fill_values(cue) == [1]
+
+
+def test_bridge_marks_letter_pieces_connected_through_the_ring():
+    """A k whose arms meet the stem only in anti-alias pixels is two fill components; with the
+    bridge mask (fill + ring) segment() marks the pair as joined (the aligner may then read the
+    two glyphs as one character), without it nothing is marked."""
+    import numpy as np
+    from vobsub_to_srt.segment import fill_mask_ex
+    from vobsub_to_srt.vobsub import Cue
+    img = np.zeros((40, 60), np.uint8)
+    img[4:36, 8:12] = 1                                   # stem
+    img[16:26, 14:22] = 1; img[26:36, 16:24] = 1          # arms, one pixel away from the stem
+    img[16:36, 12:14] = 2                                 # the join: ring colour only
+    img[4:36, 40:50] = 1                                  # a second letter, well apart
+    ring = np.zeros_like(img, bool)
+    for v in (1,):
+        m = img == v
+        ring |= np.pad(m, 1)[2:, 1:-1] | np.pad(m, 1)[:-2, 1:-1] | np.pad(m, 1)[1:-1, 2:] | np.pad(m, 1)[1:-1, :-2]
+    img[ring & (img == 0)] = 2                            # one-pixel ring around every fill pixel
+    out = np.zeros_like(img, bool)
+    m2 = img > 0
+    out = np.pad(m2, 1)[2:, 1:-1] | np.pad(m2, 1)[:-2, 1:-1] | np.pad(m2, 1)[1:-1, 2:] | np.pad(m2, 1)[1:-1, :-2]
+    img[out & (img == 0)] = 3                             # outline around it all
+    cue = Cue(0, 0, 1000, img, [(0, 0, 0), (240, 240, 240), (153, 153, 153), (0, 0, 0)], [0, 15, 15, 15])
+    mask, bridge = fill_mask_ex(cue)
+    assert bridge is not None and bridge.shape == mask.shape
+    assert len(segment(mask)[0].glyphs) == 3                 # stem, arms, second letter
+    line = segment(mask, bridge)[0]
+    assert len(line.glyphs) == 3 and line.joined == [True, False]   # kept apart, but marked as one letter

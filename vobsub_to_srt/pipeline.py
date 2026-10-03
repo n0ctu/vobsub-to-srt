@@ -24,7 +24,7 @@ from .lexicon import make_lexicon
 from .names import random_db_name
 from .simplify import CHARSET_LITERAL, CHARSET_SIMPLIFIED, simplify
 from .recognize import CueResult, near_match, recognize, _decide
-from .segment import Line, bold_votes, fill_mask, italic_votes, segment, fill_values
+from .segment import Line, bold_votes, fill_mask, fill_mask_ex, italic_votes, segment, fill_values
 from .srt import fmt_ts, normalize_text, render_srt
 from .vlm import VLMClient, mask_to_png, render_cue_png, sheet_png, split_sheet
 from .vobsub import Cue, load_vobsub, load_vobsub_bytes
@@ -234,10 +234,11 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
     sample_glyph: dict = {}
     all_gaps: list[int] = []
     for c in cues:
-        m = fill_mask(c)
+        m, bridge = fill_mask_ex(c)
         if opts.rescale:
             m = transfer.resize_bits(m, opts.rescale)     # testing: simulate another resolution
-        ls = segment(m)
+            bridge = None
+        ls = segment(m, bridge)
         states.append(CueState(c, m, ls))
         for l in ls:
             keyfreq.update(g.key for g in l.glyphs)

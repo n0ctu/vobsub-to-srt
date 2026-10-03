@@ -27,6 +27,49 @@ def fill_mask(cue: Cue) -> np.ndarray:
     return crop(np.isin(cue.image, keep))
 
 
+def fill_mask_ex(cue: Cue) -> tuple[np.ndarray, np.ndarray | None]:
+    """fill_mask plus a 'bridge' mask on the same crop: the fill together with its anti-alias
+    rings. Thin joins of a letter (the arms of a k meeting its stem) often fall entirely into the
+    ring colour, so the fill alone breaks the letter in two; segment() uses the bridge to put
+    such pieces back together."""
+    keep = fill_values(cue)
+    if not keep:
+        return np.zeros((0, 0), bool), None
+    fill = np.isin(cue.image, keep)
+    rows, cols = np.nonzero(fill.any(axis=1))[0], np.nonzero(fill.any(axis=0))[0]
+    box = (slice(rows[0], rows[-1] + 1), slice(cols[0], cols[-1] + 1))
+    rings = ring_values(cue, keep)
+    bridge = np.isin(cue.image, keep + rings)[box] if rings else None
+    return fill[box], bridge
+
+
+def ring_values(cue: Cue, keep: list[int]) -> list[int]:
+    """Opaque colours that are neither fill nor outline: thin anti-alias rings enclosed by the
+    outline (foreign contacts per pixel above RING_THIN, little exposure to transparency)."""
+    img = cue.image
+    if img.size == 0:
+        return []
+    h, w = img.shape
+    padded = np.pad(img, 1, constant_values=4)
+    opaque = [u for u in range(4) if cue.alpha[u] >= 8 and u not in keep]
+    out = []
+    for v in opaque:
+        m = img == v
+        n = int(m.sum())
+        if n == 0:
+            continue
+        hist = np.zeros(5, np.int64)
+        for dy, dx in ((0, 1), (2, 1), (1, 0), (1, 2)):
+            nb = padded[dy:dy + h, dx:dx + w]
+            nb = nb[m & (nb != v)]
+            nb = np.where(np.isin(nb, [u for u in range(4) if cue.alpha[u] >= 8]) | (nb == 4), nb, 0)
+            hist += np.bincount(nb, minlength=5)
+        total = max(int(hist.sum()), 1)
+        if total / n > RING_THIN and (hist[0] + hist[4]) / total < MAX_EXPOSURE and hist[keep].sum() > 0:
+            out.append(v)
+    return out
+
+
 def fill_values(cue: Cue) -> list[int]:
     """The palette values that are text fill.
 
@@ -135,6 +178,7 @@ class Line:
     glyphs: list[Glyph] = field(default_factory=list)
     baseline: int = 0
     gaps: list[int] = field(default_factory=list)   # gap after glyph i (len = len(glyphs)-1)
+    joined: list[bool] = field(default_factory=list)   # glyph i and i+1 are one letter broken at a thin join (see _joined_flags)
     underlines: list[tuple[int, int]] = field(default_factory=list)  # x ranges of removed underline strokes
 
 
@@ -280,7 +324,39 @@ def despeckle(mask: np.ndarray) -> np.ndarray:
     return mask & ~np.isin(lab, specks) if specks else mask
 
 
-def segment(mask: np.ndarray) -> list[Line]:
+BRIDGE_GAP = 2         # pieces at most this far apart horizontally may be one letter joined through the ring
+BRIDGE_SHARE = 0.5     # ... if the ring joins them along at least this share of their common height
+
+
+def _joined_flags(glyphs: list["Glyph"], bridge: np.ndarray) -> list[bool]:
+    """For each neighbouring pair: are the two pieces physically one letter broken at a thin join
+    (a k whose arms meet the stem only in anti-alias pixels)? They must lie within BRIDGE_GAP px,
+    be connected through the bridge mask (fill + ring) and be joined along most of their common
+    height. Segmentation keeps them apart (letters of condensed fonts touch the same way); the
+    aligner may read such a pair as one character when the text has one."""
+    blab, nb = ndimage.label(bridge, structure=_EIGHT)
+    out = [False] * max(0, len(glyphs) - 1)
+    if nb == 0:
+        return out
+
+    def comps(g):
+        sub = blab[g.y:g.y + g.h, g.x:g.right][g.bits]
+        return set(sub[sub > 0].tolist())
+
+    for i, (a, b) in enumerate(zip(glyphs, glyphs[1:])):
+        if b.x - a.right > BRIDGE_GAP:
+            continue
+        y0, y1 = max(a.y, b.y), min(a.y + a.h, b.y + b.h)
+        if y1 <= y0 or not (comps(a) & comps(b)):
+            continue
+        x0, x1 = min(a.right, b.x), max(a.right, b.x)
+        strip = bridge[y0:y1, max(0, x0 - 1):x1 + 1]
+        if strip.size and float(strip.any(axis=1).mean()) >= BRIDGE_SHARE:
+            out[i] = True
+    return out
+
+
+def segment(mask: np.ndarray, bridge: np.ndarray | None = None) -> list[Line]:
     lines: list[Line] = []
     mask = despeckle(mask)
     for y0, y1 in split_lines(mask):
@@ -306,6 +382,8 @@ def segment(mask: np.ndarray) -> list[Line]:
         for g in line.glyphs:
             g.top_rel = g.y - line.baseline
         line.gaps = [b.x - a.right for a, b in zip(line.glyphs, line.glyphs[1:])]
+        if bridge is not None and bridge.shape == mask.shape:
+            line.joined = _joined_flags(line.glyphs, bridge)
         lines.append(line)
     return lines
 
