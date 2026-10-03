@@ -140,9 +140,12 @@ def align_line(db: GlyphDB, line: Line, styled: list[tuple[str, bool]], gap_thre
         # (a k whose stem alone reads as a confirmed l): then they may well be one character.
         joined = bool(line.joined) and all(line.joined[t - 1] for t in range(i + 1, i + s))
         letters = not joined and any(trusted[t] and trusted[t] not in PUNCT for t in range(i, i + s))
+        seq = db.seq_label(gl[i:i + s])
+        if seq == chars[j]:
+            return 0.0        # the memory has confirmed these pieces as this character (a " drawn as two ticks)
         if letters or all(known[i:i + s]):
             together = "".join(known[t] or "\0" for t in range(i, i + s))
-            combined = db.seq_label(gl[i:i + s]) or COMBINE.get(together, together)
+            combined = seq or COMBINE.get(together, together)
             if combined != chars[j] and (letters or chars[j] not in PUNCT):
                 return INF
         span = gl[i + s - 1].right - gl[i].x
@@ -150,10 +153,10 @@ def align_line(db: GlyphDB, line: Line, styled: list[tuple[str, bool]], gap_thre
         for t in range(i, i + s):
             if joined:
                 continue      # pieces of one broken letter: no letter is being swallowed
-            if strong[t]:
-                c += 4.0      # swallowing a confirmed glyph: the VLM most likely dropped a character
+            if strong[t] and strong[t] not in PUNCT:
+                c += 4.0      # swallowing a confirmed letter: the VLM most likely dropped a character
             elif known[t]:
-                c += 1.0
+                c += 1.0      # a known piece (a tick, a comma) forming a punctuation character with its neighbour
         return c
 
     if m == n:
@@ -217,7 +220,8 @@ def align_line(db: GlyphDB, line: Line, styled: list[tuple[str, bool]], gap_thre
     _il_pairs(maps)
     n_conf = sum(1 for mp in maps if mp.db_label and mp.db_label != mp.text)
     soft = sum(1 for mp in maps if mp.segs[1] - mp.segs[0] == 1 and not mp.db_label
-               and trusted[mp.segs[0]] and trusted[mp.segs[0]] != mp.text)
+               and trusted[mp.segs[0]] and trusted[mp.segs[0]] != mp.text
+               and not (trusted[mp.segs[0]] in AMBIG_IL and mp.text in AMBIG_IL))   # I/l: same pixels, as in the fast path
     return Alignment(maps, float(dp[m, n]), starts, n_conf, soft, _shift_run(maps))
 
 
@@ -275,6 +279,37 @@ RELINE_WIDE = 0.2            # ... share of the glyph count a word boundary may 
 def flatten(text: str) -> list[tuple[str, str]]:
     """The VLM's line breaks (newlines, <br>) become spaces: one styled character stream."""
     return parse_styled(_BREAK.sub(" ", text))
+
+
+LOW_QUOTES = {"\"": "\u201e", "\u201c": "\u201e", "\u201d": "\u201e", "\u201e": "\u201e"}      # a double quote drawn on the baseline is „
+
+
+def quotes_by_position(db: GlyphDB, lines: list[Line], text: str, gap_threshold: float) -> str:
+    """Literal character set: the model tends to write every double quote as " or “ ”; the image
+    says where it sits. A quote whose glyphs lie in the lower half of the line is „, one in the
+    upper half keeps the model's high form (" stays ", „ becomes ")."""
+    vl = [l for l in text.split("\n") if l.strip()]
+    if len(vl) != len(lines):
+        return text
+    out = []
+    for line, vtext in zip(lines, vl):
+        styled = parse_styled(vtext)
+        a = align_line(db, line, styled, gap_threshold)     # no learning budget here: any alignment places the quotes
+        if a is None:
+            out.append(vtext)
+            continue
+        pos = [k for k, (ch, _) in enumerate(styled) if ch != " "]
+        mid = (line.y0 + line.y1) / 2
+        for mp in a.mappings:
+            if mp.chars[1] - mp.chars[0] != 1 or mp.text not in '"\u201c\u201d\u201e':
+                continue
+            parts = line.glyphs[mp.segs[0]:mp.segs[1]]
+            low = sum(g.y + g.h / 2 for g in parts) / len(parts) > mid
+            want = LOW_QUOTES[mp.text] if low else ('"' if mp.text == "\u201e" else mp.text)
+            k = pos[mp.chars[0]]
+            styled[k] = (want, styled[k][1])
+        out.append(render_styled(styled))
+    return "\n".join(out)
 
 
 def reline(db: GlyphDB, lines: list[Line], vlm_text: str, gap_threshold: float) -> str:

@@ -772,3 +772,45 @@ def test_single_line_with_descenders_is_not_split():
     m[30:38, 40:46] = True                 # a descender
     m[30:38, 130:136] = True
     assert [len(l.glyphs) for l in segment(m)] == [6]
+
+
+def test_two_tick_quote_confirmed_as_sequence_costs_nothing():
+    """DejaVu draws " as two ticks. Once the memory holds the pair as ", a line with two quotes
+    aligns within budget even though both ticks are confirmed apostrophes."""
+    db = GlyphDB("t")
+    t = 12
+    for _ in range(3):                                   # confirm the ticks as apostrophes and the pair as "
+        assert learn_cue(db, segment(render("it's 'a'")), "it's 'a'", t).learned
+        assert learn_cue(db, segment(render('"so" it')), '"so" it', t).learned
+    lines = segment(render('"ok" "no"'))
+    lr = learn_cue(db, lines, '"ok" "no"', t)
+    assert lr.learned, lr.reason
+
+
+def test_capital_i_on_an_l_glyph_is_not_a_contradiction_in_the_slow_path():
+    """The fast path (counts match) exempts I/l; the DP path (a split glyph on the line) must too."""
+    from vobsub_to_srt.align import align_line
+    db = GlyphDB("t")
+    for _ in range(2):
+        learn_cue(db, segment(render("lila")), "lila", 12)
+    line = segment(render("lila"))[0]
+    glyphs = line.glyphs
+    # split the last glyph in two halves so the glyph count no longer matches the text
+    g = glyphs[-1]
+    from vobsub_to_srt.segment import Glyph, glyph_key
+    half = g.bits.shape[1] // 2
+    a, b = Glyph(g.x, g.y, g.bits[:, :half].copy()), Glyph(g.x + half, g.y, g.bits[:, half:].copy())
+    a.key, b.key = glyph_key(a.bits), glyph_key(b.bits)
+    a.top_rel = b.top_rel = g.top_rel
+    line.glyphs = glyphs[:-1] + [a, b]
+    line.gaps = [n.x - m.right for m, n in zip(line.glyphs, line.glyphs[1:])]
+    al = align_line(db, line, parse_styled("IiIa"), 12)
+    assert al is not None and al.soft_conflicts == 0
+
+
+def test_low_quote_by_position_in_literal_mode():
+    from vobsub_to_srt.align import quotes_by_position
+    db = GlyphDB("t")
+    lines = segment(render('„ab“ „cd“'))
+    assert quotes_by_position(db, lines, '"ab" "cd"', 12) == '„ab" „cd"'
+    assert quotes_by_position(db, lines, '„ab“ „cd“', 12) == '„ab“ „cd“'
