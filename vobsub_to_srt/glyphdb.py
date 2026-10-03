@@ -16,6 +16,8 @@ from pathlib import Path
 import numpy as np
 
 POS_TOL_UNITS = 0.05   # tolerance on top_rel (baseline jitter), in font units (x-height)
+RESCALED_POS_TOL = 2   # ... extra pixels for a rescaled track (vertical jitter)
+SEQ_PART_TOL = 0.2     # a sequence part may snap to a sequence-bearing cluster this far away (key only)
 XHEIGHT_CHARS = set("acemnorsuvwxz")   # lowercase letters without ascender/descender
 MIN_VOTES = 2          # a label needs this many independent observations (cues) ...
 MIN_SHARE = 2 / 3      # ... and at least this share of all votes before it is trusted
@@ -320,6 +322,7 @@ class GlyphDB:
         # edge-tolerant matching (recognize.near_match stage 2) is only for rescaled tracks, whose
         # jitter it is made for; a crisp track's exact bitmaps never need it (pipeline sets it)
         self.tolerant = False
+        self.rescaled = False      # set per file by the pipeline: the track's bitmaps jitter (see pos_tol)
         self._il_cache: tuple[int, bool] = (-1, False)
         self.protos: dict[str, Proto] = {}       # canonical key -> prototype (see Proto)
         self._pstacks: dict | None = None        # canvas size -> (keys, medians, masks), rebuilt lazily
@@ -328,7 +331,12 @@ class GlyphDB:
 
     @property
     def pos_tol(self) -> int:
-        return max(1, round(POS_TOL_UNITS * self.unit)) if self.unit else 2
+        base = max(1, round(POS_TOL_UNITS * self.unit)) if self.unit else 2
+        # A rescaled track jitters vertically as well: the same tick lands at -29, -30 or -31. With
+        # one pixel of tolerance each landing started its own cluster, so a quote pair was a new
+        # sequence every time. Confusable positions (comma vs tick, hyphen vs underscore) lie
+        # half an x-height or more apart, far outside the widened window.
+        return base + RESCALED_POS_TOL if self.rescaled else base
 
     def update_unit(self) -> None:
         """x-height = median height of confirmed, upright x-height letters."""
@@ -594,8 +602,21 @@ class GlyphDB:
         Glyphs that cannot be part of any stored sequence keep their own key (no search).
         Parts stacked on top of each other (a colon whose dots did not merge) are marked, so
         the same two dots side by side (an ellipsis) never match a stacked rule."""
-        key = "|".join(self.soft_canonical(g.key, g.bits, g.top_rel) if self._is_seq_part(g.bits) else
-                       self.canonical(g.key) for g in glyphs)
+        high = all(_high(g) for g in glyphs)
+        parts = []
+        for g in glyphs:
+            if not self._is_seq_part(g.bits):
+                parts.append(self.canonical(g.key))
+                continue
+            canon = self.soft_canonical(g.key, g.bits, g.top_rel)
+            if canon not in self._seq_part_clusters(high):
+                # Tiny parts (a tick: ~35 px of ink) jitter by a tenth of their ink per pixel, so a
+                # rescaled track scatters them over many small clusters and the pair's votes over
+                # as many keys. For the key only, a part snaps to the nearest cluster that already
+                # forms a sequence at this height; glyph clustering itself stays strict (. vs ,).
+                canon = self._nearest_seq_part(g, high) or canon
+            parts.append(canon)
+        key = "|".join(parts)
         if stacked is None:
             stacked = _stacked(glyphs)
         if stacked:
@@ -604,9 +625,29 @@ class GlyphDB:
         # bitmap. A pair sitting well above the baseline (every part's bottom higher than its own
         # height) is a different character from the same pair on the baseline (" vs „), so high
         # sequences get their own key.
-        if all(_high(g) for g in glyphs):
+        if high:
             key += "'"
         return key
+
+    def _seq_part_clusters(self, high: bool) -> set[str]:
+        """Clusters that are parts of a stored sequence at this height (cached per table size)."""
+        cache = getattr(self, "_seq_part_cache", None)
+        if cache is None or cache[0] != len(self.sequences):
+            low, hi = set(), set()
+            for k in self.sequences:
+                (hi if k.endswith("'") else low).update(k.rstrip("'^").split("|"))
+            cache = self._seq_part_cache = (len(self.sequences), low, hi)
+        return cache[2] if high else cache[1]
+
+    def _nearest_seq_part(self, g, high: bool) -> str | None:
+        wanted = self._seq_part_clusters(high)
+        if not wanted:
+            return None
+        for r, key, dh in self.near_candidates(g.bits, max_ratio=SEQ_PART_TOL, key=g.key):
+            cl = self.shapes[key].cluster
+            if cl in wanted and self.shapes[cl].variant(g.top_rel, self.pos_tol) is not None:
+                return cl
+        return None
 
     def part_labels(self, glyphs) -> list[str | None]:
         """Each glyph's own trusted label (None if unknown or unconfirmed)."""
@@ -639,7 +680,11 @@ class GlyphDB:
             stacked = _stacked(glyphs)
         self._log("seq", [(g.key, g.bits, g.top_rel) for g in glyphs], label, stacked)
         for g in glyphs:
-            self.place(g.key, g.bits, g.top_rel)
+            shape = self.place(g.key, g.bits, g.top_rel)
+            # A part carries no votes, but its cluster needs a variant at this position: joining a
+            # cluster requires one, so without it every jittered tick of a rescaled track started
+            # a new cluster and every jittered quote pair was a sequence never seen before.
+            self.shapes[shape.cluster].variant(g.top_rel, self.pos_tol, create=True)
         self.sequences.setdefault(self.seq_key(glyphs, stacked), Counter())[label] += 1
         self.dirty = True
 
@@ -1028,7 +1073,7 @@ class GlyphDB:
     def _adopt(self, other: "GlyphDB") -> None:
         """Continue with another copy's state (after merging into it)."""
         keep = {"journal", "path", "private_path", "word_memory", "file_geo", "_geo_credited",
-                "file_counts", "_counts_credited", "saved_this_run", "tolerant"}
+                "file_counts", "_counts_credited", "saved_this_run", "tolerant", "rescaled"}
         for k, v in other.__dict__.items():
             if k not in keep:
                 setattr(self, k, v)

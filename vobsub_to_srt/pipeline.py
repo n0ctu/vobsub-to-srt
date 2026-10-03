@@ -326,6 +326,7 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
         # trajectory); from the next file on, jittered variants of known letters are read instead
         # of asked.
         db.tolerant = probe_mode != "new"
+        db.rescaled = True
         report_notes.append(f"rescaled track suspected: {100 * once_share:.0f}% of {len(keyfreq)} glyph bitmaps occur once")
     # Geometry votes accumulate across files: what the DB already holds plus this file's votes.
     # (Decisions compare the two counts, so re-running a file cannot flip them.) The votes are

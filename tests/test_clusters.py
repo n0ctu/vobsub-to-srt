@@ -235,3 +235,46 @@ def test_sequence_key_tells_high_ticks_from_low_commas():
     assert db.seq_label(low) == "„"
     assert db.seq_label(high) is None
     assert db.seq_key(high) != db.seq_key(low)
+
+
+def test_jittered_sequence_parts_join_the_stored_parts_cluster():
+    """A quote learned from one pair of ticks is recognised from a slightly different pair."""
+    import numpy as np
+    from vobsub_to_srt.glyphdb import GlyphDB
+    from vobsub_to_srt.segment import Glyph
+    rng = np.random.default_rng(3)
+    base = rng.random((12, 7)) < 0.6
+    def pair(bits_a, bits_b, name):
+        gl = [Glyph(0, 10, bits_a.copy()), Glyph(9, 10, bits_b.copy())]
+        for k, g in enumerate(gl):
+            g.top_rel = -30
+            g.key = f"{name}{k}"
+        return gl
+    db = GlyphDB("t")
+    for _ in range(3):
+        db.add_sequence(pair(base, base, "a"), '"')
+    jit = base.copy(); jit[0, 3] ^= True                   # one edge pixel differs
+    assert db.seq_label(pair(jit, base, "b")) == '"'
+
+
+def test_jittered_sequence_parts_snap_to_the_sequence_cluster_for_the_key():
+    """Ticks of ~35 px of ink scatter over several small clusters on a rescaled track; the pair's
+    key still lands on the cluster that carries the sequence."""
+    import numpy as np
+    from vobsub_to_srt.glyphdb import GlyphDB
+    from vobsub_to_srt.segment import Glyph
+    rng = np.random.default_rng(5)
+    base = rng.random((11, 6)) < 0.6
+    def pair(a, b, name):
+        gl = [Glyph(0, 10, a.copy()), Glyph(9, 10, b.copy())]
+        for k, g in enumerate(gl):
+            g.top_rel = -30
+            g.key = f"{name}{k}"
+        return gl
+    db = GlyphDB("t")
+    for _ in range(3):
+        db.add_sequence(pair(base, base, "a"), '"')
+    far = base.copy()
+    far[0, :] ^= True                    # a whole row differs: beyond the cluster tolerance for 35 px, within the key tolerance
+    assert db.find_cluster(far, -30) is None
+    assert db.seq_label(pair(far, base, "b")) == '"'
