@@ -62,7 +62,7 @@ Without a VLM endpoint configured, the default mode runs teacher-less: fonts in 
 
 Outputs: `out/<name>.srt`; `out/<name>.report.json` (VLM calls, where each cue's text came from, flagged cues, failures). 
 
-**Baseline fonts.** `glyph-memory/` is tracked in the repo and ships glyph memories for fonts already learned (currently two common sans-serif subtitle fonts at 1080p, upright and italic). A clone therefore reads those fonts without any VLM (`--mode nocr-only` works offline for them). On-the-fly VLM learned glyph-sets are automatically added there. Feel free to submit them as a PR so other users can use them as well! 
+**Baseline fonts.** `glyph-memory/` is tracked in the repo and ships glyph memories for fonts already learned (currently nine sets: the common Blu-ray sans-serif families at 1080p and 720p, upright and italic, learned on two releases each and spot-checked against the images). A clone therefore reads those fonts without any VLM (`--mode nocr-only` works offline for them). On-the-fly VLM learned glyph-sets are automatically added there. Feel free to submit them as a PR so other users can use them as well! 
 
 **Glyph memory vs. word memory.** `glyph-memory/<name>.json` holds one learned glyph-set: glyph bitmaps (including fused letter pairs such as `rt`), their labels, the gap model and multi-glyph characters. `word-memory/<name>.json` is private: hashes of the cue images learned from and, with `--word-memory`, the words already resolved per glyph sequence (e.g. names), which helps with pixel-identical `I`/`l` on your own library.
 
