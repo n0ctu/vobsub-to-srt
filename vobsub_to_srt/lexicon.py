@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import itertools
 import re
+from collections import Counter
 import logging
 import os
 from pathlib import Path
@@ -244,6 +245,34 @@ class Lexicon:
         if chosen:
             self.stats["repair"] = self.stats.get("repair", 0) + 1
         return chosen
+
+
+# The commonest words of each language the lexicon knows; enough to tell the languages apart
+# when a release tags its English track "de" (Game of Thrones: 164 cues with "I" went to the
+# model because the German dictionary cannot tell I from l in them).
+STOPWORDS = {
+    "de": "der die und ich nicht das ist du sie es ein zu er wir was mich dich sind wenn auch noch aber mit".split(),
+    "en": "the you and to of it that is in what we he this for on have with not be your".split(),
+    "fr": "je le la et les vous de pas que un une est il ce ne tu nous des en qui".split(),
+    "es": "que de no la el es y en lo un te se me una por los con para si".split(),
+    "it": "che di non la il è un e per una sono mi ti ho cosa se del ma lo".split(),
+    "nl": "de het een ik je niet en dat is van we hij ze op te maar met wat voor".split(),
+}
+_WORD = re.compile(r"[^\W\d_]+", re.U)
+
+
+def guess_language(texts, candidates=STOPWORDS) -> str | None:
+    """The language of a transcript by stopword counts: the winner if it has at least 20 hits and
+    1.5 times the runner-up, else None (too little text, or a mixed one)."""
+    counts = Counter()
+    for t in texts:
+        for w in _WORD.findall(t.lower()):
+            counts[w] += 1
+    scores = {lang: sum(counts[w] for w in words) for lang, words in candidates.items()}
+    ranked = sorted(scores.items(), key=lambda kv: -kv[1])
+    if len(ranked) < 2 or ranked[0][1] < 20 or ranked[0][1] < 1.5 * ranked[1][1]:
+        return None
+    return ranked[0][0]
 
 
 def make_lexicon(mode: str, lang: str, download: bool = True) -> Lexicon | None:

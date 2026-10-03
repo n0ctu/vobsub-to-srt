@@ -20,7 +20,7 @@ from . import transfer
 from .glyphdb import GlyphDB, combine_style
 
 RESCALED_ONCE_SHARE = 0.5   # share of glyph bitmaps occurring once above which a track counts as rescaled
-from .lexicon import make_lexicon
+from .lexicon import guess_language, make_lexicon
 from .names import random_db_name
 from .simplify import CHARSET_LITERAL, CHARSET_SIMPLIFIED, simplify
 from .recognize import CueResult, near_match, recognize, _decide
@@ -548,6 +548,7 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
                 last_flush[0] = time.time()
                 flush_cues()
 
+        language_checked = False
         for recheck in range(4):
             while True:
                 unresolved = []
@@ -564,6 +565,21 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
                         unresolved.append(st)
                 flush_cues()
                 flush_glyphs()
+                if not language_checked and lexicon is not None and opts.lexicon == "auto":
+                    # The track's language tag is what the release says, not what the text is.
+                    # With most of the file read, the text decides which dictionary breaks I/l
+                    # ties; a wrong one leaves every "I" undecided and sends the cue to the model.
+                    language_checked = True
+                    guess = guess_language(st.text for st in states if st.text)
+                    if guess and guess != lexicon.lang:
+                        switched = make_lexicon(opts.lexicon, guess, download=opts.download_dicts)
+                        if switched is not None:
+                            log.info("lexicon: the text reads as %r, not %r as tagged; switching dictionaries", guess, lang)
+                            report_notes.append(f"language: tagged {lang!r}, text reads as {guess!r}")
+                            lang, lexicon = guess, switched
+                            for st in unresolved:
+                                st.text, st.result = None, None
+                            continue
                 if unresolved and client is not None and opts.low_confidence == "accept":
                     # An image the memory already learned from cannot teach anything a second
                     # time (its votes would not count), so asking the model again only costs a

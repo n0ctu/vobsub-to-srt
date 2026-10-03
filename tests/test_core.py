@@ -838,3 +838,12 @@ def test_gap_statistics_override_a_model_space_after_an_ellipsis():
     assert 3 in aligns[0].spaces_before
     notes = geometry_spaces(db, lines, aligns)
     assert notes and 3 not in aligns[0].spaces_before
+
+
+def test_language_guess_from_text():
+    from vobsub_to_srt.lexicon import guess_language
+    en = ["I don't know, Your Grace.", "It is our duty and our honor to serve the realm.", "You should be the one to tell him what we found in the north."] * 4
+    de = ["Ich weiß nicht, was du meinst.", "Das ist nicht der Grund, und du weißt es.", "Wir sind nicht die Einzigen, die das wollen."] * 4
+    assert guess_language(en) == "en"
+    assert guess_language(de) == "de"
+    assert guess_language(["Hm.", "Ja."]) is None            # too little text to tell
