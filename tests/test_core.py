@@ -672,3 +672,18 @@ def test_bold_votes_separate_weights_and_stay_quiet_on_regular_text():
         f = ImageFont.truetype("DejaVuSans.ttf", size)
         ls = [segment(render_font(w, f)) for w in ("want to be", "on Chucky", "Previously", "Jennifer", "Tiffany")]
         assert all(v[1] == 0 for v in bold_votes(ls, 10).values()), size
+
+
+def test_fill_values_drop_shadow_authoring():
+    """A drop shadow instead of an outline leaves the fill exposed to transparency as well; the
+    anti-alias ring is then the only enclosed colour and must not be taken for the fill."""
+    import numpy as np
+    from vobsub_to_srt.segment import fill_values
+    from vobsub_to_srt.vobsub import Cue
+    img = np.zeros((24, 90), np.uint8)
+    for x0 in (4, 34, 64):                       # three letters: fill 1 with a ring 2, shadow 3 offset down-right
+        img[8:20, x0 + 2:x0 + 14] = 3            # shadow
+        img[5:17, x0:x0 + 12] = 2                # ring around the fill
+        img[6:16, x0 + 1:x0 + 11] = 1            # fill
+    cue = Cue(0, 0, 1000, img, [(0, 0, 0), (204, 204, 204), (153, 153, 153), (0, 0, 0)], [0, 15, 15, 15])
+    assert fill_values(cue) == [1]

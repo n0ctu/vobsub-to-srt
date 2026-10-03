@@ -69,6 +69,11 @@ def fill_values(cue: Cue) -> list[int]:
         st["exposure"] = exposed / max(int(st["hist"].sum()), 1)
     outline = max(cand, key=lambda v: cand[v]["exposure"])
     inner = {v: st for v, st in cand.items() if v != outline and st["exposure"] < MAX_EXPOSURE}
+    if inner and all(int(st["hist"].sum()) / st["n"] > RING_THIN for st in inner.values()):
+        # only rings inside: the "outline" is a drop shadow that leaves the fill exposed too
+        # (Cube 2021: fill and shadow both face transparency on half their contacts, the
+        # anti-alias ring was the only enclosed colour and 557 of 646 cues read hollow letters)
+        inner = {}
     if not inner:
         # no outline layout (or an outline so sparse that the fill touches the backdrop itself):
         # thin colours are anti-alias rings when a thicker one exists; of the rest, the fill is
@@ -76,7 +81,10 @@ def fill_values(cue: Cue) -> list[int]:
         # crop lets the fill touch the image edge.
         thin = {v: int(st["hist"].sum()) / st["n"] for v, st in cand.items()}
         thick = [v for v in cand if thin[v] <= RING_THIN] or [min(cand, key=thin.get)]
-        keep = [min(thick, key=lambda v: cand[v]["hist"][0] / max(int(cand[v]["hist"].sum()), 1))]
+        if len(thick) > 1 and min(thin[v] for v in thick) * 1.5 < sorted(thin[v] for v in thick)[1]:
+            keep = [min(thick, key=thin.get)]        # one colour is clearly the most solid: the fill
+        else:
+            keep = [min(thick, key=lambda v: cand[v]["hist"][0] / max(int(cand[v]["hist"].sum()), 1))]
     else:
         thin = {v: int(st["hist"].sum()) / st["n"] for v, st in inner.items()}
         contact = {v: st["hist"][outline] / max(int(st["hist"].sum()), 1) for v, st in inner.items()}
