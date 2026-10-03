@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .align import ALREADY_LEARNED, align_cue, learn_cue, otsu_threshold, reline, reline_cues, restyle, strip_tags
+from .align import ALREADY_LEARNED, align_cue, learn_cue, otsu_threshold, quotes_by_position, reline, reline_cues, restyle, strip_tags
 from . import transfer
 from .glyphdb import GlyphDB, combine_style
 
@@ -446,6 +446,8 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
 
 
     def apply_vlm(st: CueState, text: str, source: str) -> None:
+        if opts.keep_special_chars and opts.mode != "vlm-only":
+            text = quotes_by_position(db, st.lines, text, gap_t)   # „ or " by where the glyph sits
         st.text = normalize_text(text)
         st.source = source
         stats[source] += 1

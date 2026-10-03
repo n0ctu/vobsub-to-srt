@@ -213,3 +213,25 @@ def test_local_difference_separates_touching_letter_groups_but_not_jitter():
     j[::7, :] ^= True                               # jitter spread over the whole glyph
     assert abs(local_diff_ratio(a, j) - diff_ratio(a, j)) < 0.02
     assert letters_in("fte") == 3 and letters_in("...") == 0 and letters_in(None, 'r"') == 1
+
+
+def test_sequence_key_tells_high_ticks_from_low_commas():
+    """Same bitmaps, different height: a " at cap height and a „ on the baseline are two sequences."""
+    import numpy as np
+    from vobsub_to_srt.glyphdb import GlyphDB
+    from vobsub_to_srt.segment import Glyph
+    db = GlyphDB("t")
+    bits = np.ones((10, 6), bool)
+    low = [Glyph(0, 40, bits.copy()), Glyph(8, 40, bits.copy())]
+    high = [Glyph(0, 10, bits.copy()), Glyph(8, 10, bits.copy())]
+    for g in low:
+        g.top_rel = -5
+    for g in high:
+        g.top_rel = -30
+    for g in low + high:
+        g.key = "k" + str(g.x)
+    for _ in range(3):
+        db.add_sequence(low, "„")
+    assert db.seq_label(low) == "„"
+    assert db.seq_label(high) is None
+    assert db.seq_key(high) != db.seq_key(low)

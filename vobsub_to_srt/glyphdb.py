@@ -46,6 +46,15 @@ STRICT = set("Il|i1!jíìïî")   # punctuation is told apart by size and baseli
 _ALIGN = [(dy, dx) for dy in (0, 1, 2) for dx in (0, 1, 2)]   # the 3x3 alignments of a near comparison
 
 
+def _high(g) -> bool:
+    """Does the part sit clearly above the baseline (its bottom higher than its own height)?"""
+    top = getattr(g, "top_rel", None)
+    if top is None:
+        return False
+    h = g.bits.shape[0]
+    return top + h < -h
+
+
 def _stacked(glyphs) -> bool:
     """True if any two consecutive parts are vertically separated (one above the other).
     Journal stand-ins carry the flag instead of a position."""
@@ -589,7 +598,15 @@ class GlyphDB:
                        self.canonical(g.key) for g in glyphs)
         if stacked is None:
             stacked = _stacked(glyphs)
-        return key + "^" if stacked else key
+        if stacked:
+            key += "^"
+        # Shapes carry no position: in a small font the tick of a " and a comma are the same
+        # bitmap. A pair sitting well above the baseline (every part's bottom higher than its own
+        # height) is a different character from the same pair on the baseline (" vs „), so high
+        # sequences get their own key.
+        if all(_high(g) for g in glyphs):
+            key += "'"
+        return key
 
     def part_labels(self, glyphs) -> list[str | None]:
         """Each glyph's own trusted label (None if unknown or unconfirmed)."""

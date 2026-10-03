@@ -103,7 +103,7 @@ Outputs: `out/<name>.srt`; `out/<name>.report.json` (VLM calls, where each cue's
 9. **Spaces**: additive side-bearing model (letter gap(a,b) ≈ R[a] + L[b]; a space adds a learned
    offset). Ambiguous gaps go to the VLM.
 
-**Character simplification** (default; `--keep-special-chars` turns it off): everything the VLM returns is folded before it is learned, compared or written. Apostrophes/single quotes `´ ’ ‘ ‚ ′ ‹ ›` to `'`, double quotes `„ “ ” « » ″` to `"`, dashes `‐ – — ― −` to `-`, `…` to `...`, ligatures `ﬁ ﬂ ﬀ` to letters, non-breaking/thin spaces to space, soft hyphens and zero-width characters removed, Unicode NFC.
+**Character simplification** (default; `--keep-special-chars` turns it off): everything the VLM returns is folded before it is learned, compared or written. Apostrophes/single quotes `´ ’ ‘ ‚ ′ ‹ ›` to `'`, double quotes `„ “ ” « » ″` to `"`, dashes `‐ – — ― −` to `-`, `…` to `...`, ligatures `ﬁ ﬂ ﬀ` to letters, non-breaking/thin spaces to space, soft hyphens and zero-width characters removed, Unicode NFC. With simplification off, double quotes are placed by the image rather than by the model's habit: a quote drawn on the baseline is written `„`, one at cap height keeps its high form.
 
 Prompts live in `vobsub_to_srt/prompts.py`. The transcription prompt demands a literal, letter-by-letter reading (typos kept); a planned optional spell-check pass will get its own prompt.
 
