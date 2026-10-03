@@ -269,6 +269,7 @@ def align_cue(db: GlyphDB, lines: list[Line], vlm_text: str,
 
 _BREAK = re.compile(r"<\s*br\s*/?\s*>|\n", re.I)
 RELINE_TOL = 3               # chars a line's text may differ from its glyph count at a candidate split
+RELINE_WIDE = 0.2            # ... share of the glyph count a word boundary may miss by when nothing fits RELINE_TOL
 
 
 def flatten(text: str) -> list[tuple[str, str]]:
@@ -318,6 +319,11 @@ def reline_parts(db: GlyphDB, lines: list[Line], styled: list[tuple[str, str]],
     before = [0] * (N + 1)          # non-space characters before position idx
     for idx, (c, _) in enumerate(styled):
         before[idx + 1] = before[idx] + (c != " ")
+    # A line's share of the characters, estimated from its pixel width. Letters of heavy fonts
+    # touch and become one glyph, so the glyph count may fall short by several characters; the
+    # width does not care how the ink is split. Both estimates are tried.
+    widths = [max(1, l.glyphs[-1].right - l.glyphs[0].x) if l.glyphs else 1 for l in lines]
+    by_width = [round(before[N] * w / sum(widths)) for w in widths]
     memo: dict[tuple[int, int], tuple[float, list]] = {}
 
     def trimmed(a: int, b: int) -> tuple[int, int]:
@@ -344,25 +350,37 @@ def reline_parts(db: GlyphDB, lines: list[Line], styled: list[tuple[str, str]],
             memo[(start, k)] = res
             return res
         want = counts[k]
-        cands: list[tuple[int, int, int]] = []     # (end of left part, start of right part, deviation)
+        wide = max(RELINE_TOL, int(RELINE_WIDE * want))
+
+        def dev_of(n: int) -> int:
+            return min(abs(n - want), abs(n - by_width[k]))
+
+        cands: list[tuple[int, int, int, int]] = []  # (end of left part, start of right part, in-word, deviation)
         for idx in range(start + 1, N):
             n = before[idx] - before[start]
-            if abs(n - want) <= RELINE_TOL and before[N] - before[idx] >= 1 and styled[idx][0] == " ":
-                cands.append((idx, idx + 1, abs(n - want)))
-        if not cands:                              # no word boundary fits: split inside a word
+            if dev_of(n) <= RELINE_TOL and before[N] - before[idx] >= 1 and styled[idx][0] == " ":
+                cands.append((idx, idx + 1, 0, dev_of(n)))
+        if not cands:
+            # No word boundary fits either estimate: the VLM merged two words across the break
+            # (the split lies inside a word) or both estimates are off (a word boundary a little
+            # further away). Both are candidates; the alignment cost decides, a word boundary wins ties.
             for idx in range(start + 1, N):
                 n = before[idx] - before[start]
-                if abs(n - want) <= RELINE_TOL and before[N] - before[idx] >= 1 and styled[idx][0] != " ":
-                    cands.append((idx, idx, abs(n - want)))
-        best: tuple[tuple[float, int], list] | None = None
-        for end, nxt, dev in cands:
+                if before[N] - before[idx] < 1:
+                    continue
+                if dev_of(n) <= RELINE_TOL and styled[idx][0] != " ":
+                    cands.append((idx, idx, 1, dev_of(n)))
+                elif dev_of(n) <= wide and styled[idx][0] == " ":
+                    cands.append((idx, idx + 1, 0, dev_of(n)))
+        best: tuple[tuple[float, int, int], list] | None = None
+        for end, nxt, inword, dev in cands:
             a, b = trimmed(start, end)
             if a >= b:
                 continue
             sub_cost, rest = solve(nxt, k + 1)
             total = line_cost(k, a, b) + sub_cost
-            if best is None or (total, dev) < best[0]:
-                best = ((total, dev), [styled[a:b]] + rest)
+            if best is None or (total, inword, dev) < best[0]:
+                best = ((total, inword, dev), [styled[a:b]] + rest)
         if best is None:
             a, b = trimmed(start, N)
             res = (INF, [styled[a:b]] + [[] for _ in range(n_lines - k - 1)])
