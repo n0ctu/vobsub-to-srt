@@ -814,3 +814,27 @@ def test_low_quote_by_position_in_literal_mode():
     lines = segment(render('„ab“ „cd“'))
     assert quotes_by_position(db, lines, '"ab" "cd"', 12) == '„ab" „cd"'
     assert quotes_by_position(db, lines, '„ab“ „cd“', 12) == '„ab“ „cd“'
+
+
+def test_lexicon_words_split_at_dashes():
+    from vobsub_to_srt.recognize import GlyphResult, LineResult, _word_ranges
+    items = [GlyphResult(c, "") for c in "should--I"]
+    res = LineResult(items=items, glyph_spans=[(k, k + 1) for k in range(9)], spaces=[False] * 8)
+    assert _word_ranges(res) == [(0, 6), (8, 9)]
+
+
+def test_gap_statistics_override_a_model_space_after_an_ellipsis():
+    """The memory knows the gap between the last dot and a letter as a letter gap: the model's
+    '... wenn' becomes '...wenn' even while other glyphs of the cue are still unknown."""
+    from vobsub_to_srt.align import align_cue, geometry_spaces
+    db = GlyphDB("t")
+    t = 12
+    for text in ("...wenn so", "...wann es"):
+        for _ in range(2):
+            assert learn_cue(db, segment(render(text)), text, t).learned
+    lines = segment(render("...wenn zyx"))          # z y x unknown: the memory cannot read the cue
+    aligns, reason = align_cue(db, lines, "... wenn zyx", t)
+    assert aligns, reason
+    assert 3 in aligns[0].spaces_before
+    notes = geometry_spaces(db, lines, aligns)
+    assert notes and 3 not in aligns[0].spaces_before

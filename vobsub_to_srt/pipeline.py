@@ -15,7 +15,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from .align import ALREADY_LEARNED, align_cue, learn_cue, otsu_threshold, quotes_by_position, reline, reline_cues, restyle, strip_tags
+from .align import ALREADY_LEARNED, align_cue, geometry_spaces, learn_cue, otsu_threshold, quotes_by_position, reline, reline_cues, restyle, strip_tags
 from . import transfer
 from .glyphdb import GlyphDB, combine_style
 
@@ -474,8 +474,13 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
         if lr.alignments and client is not None and client.cache_get(accepted_key(st)) is None:
             client.cache_put(accepted_key(st), text)
         if lr.alignments:
-            # VLM characters (except where they contradict confirmed glyphs), geometric styles
+            # VLM characters (except where they contradict confirmed glyphs), geometric styles,
+            # word breaks from the memory's gap statistics where they are confident
+            gap_notes = geometry_spaces(db, st.lines, lr.alignments)
             st.text, corrections = restyle(st.lines, lr.alignments, style_of, lexicon)
+            if gap_notes:
+                stats["spaces_from_gap_statistics"] += 1
+                flagged.setdefault(st.cue.index, []).append("; ".join(gap_notes))
             if corrections:
                 stats["char_arbitrated"] += 1
                 flagged.setdefault(st.cue.index, []).append("DB overrides VLM: " + ", ".join(corrections))
@@ -675,7 +680,9 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
                 stats["arbitrated_final"] += 1
             continue
         if aligns:
+            gap_notes = geometry_spaces(db, st.lines, aligns)
             text, corrections = restyle(st.lines, aligns, style_of, lexicon)
+            corrections = corrections + gap_notes
             if any(c.startswith("misaligned") for c in corrections) or any(a.conflicts >= 2 for a in aligns):
                 res = recognize(db, st.lines, learn_near=False, lexicon=lexicon)
                 if res.ok:
@@ -766,6 +773,8 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
                     "configure a VLM endpoint to learn them", idx_path.name, stats["fallback"], len(states),
                     opts.placeholder)
     return ProcessResult(srt_text, report)
+
+
 
 
 def _select_batch(db: GlyphDB, unresolved: list[CueState], keyfreq: Counter, size: int) -> list[CueState]:

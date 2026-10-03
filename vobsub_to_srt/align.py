@@ -480,6 +480,29 @@ def learn_cue(db: GlyphDB, lines: list[Line], vlm_text: str, gap_threshold: floa
     return LearnResult(True, conflicts=conflicts or None, alignments=aligns)
 
 
+def geometry_spaces(db: GlyphDB, lines: list[Line], aligns: list[Alignment]) -> list[str]:
+    """Word breaks of a model answer where the memory's gap statistics are confident: a space the
+    model put after an ellipsis whose gap to the next letter is a letter gap goes, a space it
+    dropped at a gap the memory knows as a word gap comes back. The whole-cue rule (spaces from
+    geometry) needs every glyph readable; this one works per gap. Mutates the alignments'
+    word starts; returns a note per change."""
+    notes: list[str] = []
+    for line, a in zip(lines, aligns):
+        gl = line.glyphs
+        for mp in a.mappings:
+            i = mp.segs[0]
+            if i == 0:
+                continue
+            pred = db.classify_gap(gl[i - 1].key, gl[i].key, gl[i].x - gl[i - 1].right, "i" in mp.style)
+            if pred is True and i not in a.spaces_before:
+                a.spaces_before.add(i)
+                notes.append(f"space before {mp.text!r} (gap statistics)")
+            elif pred is False and i in a.spaces_before:
+                a.spaces_before.discard(i)
+                notes.append(f"no space before {mp.text!r} (gap statistics)")
+    return notes
+
+
 def restyle(lines: list[Line], aligns: list[Alignment], style_of, lexicon=None) -> tuple[str, list[str]]:
     """Render the VLM's characters with styles taken from the glyphs they were aligned to.
     Where the VLM contradicts a confirmed glyph label, the confirmed label wins (character-level

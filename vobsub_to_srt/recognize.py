@@ -398,13 +398,25 @@ def _repair_words(res: LineResult, lexicon) -> None:
             pos += len(t)
 
 
+WORD_BREAKS = set("-\u2013\u2014/")   # inside a space-delimited token, these separate words for the lexicon
+
+
 def _word_ranges(res: LineResult) -> list[tuple[int, int]]:
+    """Spans of lexicon words: split at spaces, and at dashes and slashes ("should--I": the
+    dictionary knows "should" and "I", not the token)."""
     out, start = [], 0
-    for i, s in enumerate(res.spaces):
-        if s is not False:
+    n = len(res.items)
+    for i in range(n):
+        text = res.items[i].text
+        if text and text in WORD_BREAKS:
+            if i > start:
+                out.append((start, i))
+            start = i + 1
+        elif i < len(res.spaces) and res.spaces[i] is not False:
             out.append((start, i + 1))
             start = i + 1
-    out.append((start, len(res.items)))
+    if start < n:
+        out.append((start, n))
     return out
 
 
