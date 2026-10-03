@@ -134,6 +134,9 @@ def render_line(l: LineResult, placeholder: str = "\ufffd") -> str:
     return render_styled(chars)
 
 
+STRAY_TOTAL = 10          # a lone vote among at least this many is a stray reading, not a label
+
+
 def _decide(v: Variant, db: GlyphDB | None = None) -> tuple[str | None, str]:
     """Label to read this glyph as. VLM votes decide (>= 2 votes, >= 2/3 majority); a teacher prior
     is used while no VLM read exists and counts as one vote once there are VLM reads. In a font
@@ -144,7 +147,11 @@ def _decide(v: Variant, db: GlyphDB | None = None) -> tuple[str | None, str]:
         if not +votes:
             return v.prior, ""
         votes[v.prior] += 1
-    labels = {k for k, n in votes.items() if n > 0}
+    total = sum(n for n in votes.values() if n > 0)
+    # a single stray reading among many (one 'L' next to 112 'I' and 197 'l' in a font that draws
+    # I and l alike) must not hide that the cluster is an I/l pair: without this, the cluster fell
+    # to the majority rule, failed it, and 210 cues of one file went back to the model
+    labels = {k for k, n in votes.items() if n > 0 and not (n == 1 and total >= STRAY_TOTAL)}
     if confusable(labels):
         return None, "ambiguous I/l"
     label, reason = trusted_label(votes)

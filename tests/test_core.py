@@ -716,3 +716,15 @@ def test_bridge_marks_letter_pieces_connected_through_the_ring():
     assert len(segment(mask)[0].glyphs) == 3                 # stem, arms, second letter
     line = segment(mask, bridge)[0]
     assert len(line.glyphs) == 3 and line.joined == [True, False]   # kept apart, but marked as one letter
+
+
+def test_stray_vote_does_not_hide_an_i_l_pair():
+    """A cluster read as I 112 times and l 197 times is an I/l pair for the lexicon to settle; one
+    stray 'L' must not turn it into a conflict (which sent 210 cues of one file to the model)."""
+    from collections import Counter
+    from vobsub_to_srt.glyphdb import Variant
+    from vobsub_to_srt.recognize import _decide
+    assert _decide(Variant(-22, Counter({"I": 112, "l": 197, "L": 1}))) == (None, "ambiguous I/l")
+    assert _decide(Variant(-22, Counter({"I": 1, "l": 1}))) == (None, "ambiguous I/l")     # small clusters unchanged
+    assert _decide(Variant(-22, Counter({"e": 40, "c": 1})))[0] == "e"
+    assert _decide(Variant(-22, Counter({"e": 5, "c": 5})))[0] is None                      # a real conflict stays one
