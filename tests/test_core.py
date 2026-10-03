@@ -745,3 +745,30 @@ def test_italic_dot_displaced_along_slant_merges_into_stem():
     assert len(lines) == 1
     widths = sorted((g.x, g.bits.shape[0]) for g in lines[0].glyphs)
     assert widths == [(10, 26), (36, 20), (42, 3)], widths
+
+
+def test_stacked_lines_without_a_blank_row_are_split():
+    """A descender of line 1 shares rows with an umlaut of line 2: no blank row, still two lines."""
+    from vobsub_to_srt.segment import segment
+    m = np.zeros((70, 200), bool)
+    for k in range(6):                     # line 1: six letters, rows 5..30, the third with a descender to row 40
+        m[5:30, 10 + k * 30:22 + k * 30] = True
+    m[30:44, 70:76] = True                 # reaches into the rows of line 2: no blank row anywhere
+    for k in range(6):                     # line 2: six letters, rows 42..66, the first with umlaut dots at rows 36..39
+        m[42:66, 25 + k * 30:37 + k * 30] = True
+    m[36:39, 26:29] = True
+    m[36:39, 33:36] = True
+    lines = segment(m)
+    assert [len(l.glyphs) for l in lines] == [6, 6]
+    assert lines[0].y1 <= 44 and lines[1].y0 >= 36
+    assert lines[1].glyphs[0].bits.shape[0] == 30     # the umlaut dots merged into their letter
+
+
+def test_single_line_with_descenders_is_not_split():
+    from vobsub_to_srt.segment import segment
+    m = np.zeros((40, 200), bool)
+    for k in range(6):
+        m[5:30, 10 + k * 30:22 + k * 30] = True
+    m[30:38, 40:46] = True                 # a descender
+    m[30:38, 130:136] = True
+    assert [len(l.glyphs) for l in segment(m)] == [6]

@@ -392,36 +392,87 @@ def _joined_flags(glyphs: list["Glyph"], bridge: np.ndarray) -> list[bool]:
     return out
 
 
+STACK_GAP = 0.6        # two text lines share a row band when their letter centres lie this many letter heights apart
+
+
+def _stacked(boxes: list[list[int]]) -> list[list[list[int]]]:
+    """Split one row band's components into the text lines stacked in it. Two lines fall into one
+    band when no blank row separates them (a descender of the upper line reaches the rows of an
+    umlaut or accent of the lower one); merging dots by x-overlap across such a band would glue
+    letters of one line to letters of the other. Letter-sized components (at least half the
+    tallest) are sorted by their vertical centre; the widest jump between neighbours, if it
+    exceeds STACK_GAP of the median letter height with at least two letters on either side,
+    splits the band there (recursively). Smaller pieces (dots, accents, punctuation) follow the
+    nearest letter they would merge with (x-overlap, vertically separate), else the nearest line."""
+    letters = [b for b in boxes if b[3] - b[2] >= 0.5 * max(bx[3] - bx[2] for bx in boxes)]
+    if len(letters) < 4:
+        return [boxes]
+    letters.sort(key=lambda b: b[2] + b[3])
+    heights = sorted(b[3] - b[2] for b in letters)
+    med_h = heights[len(heights) // 2]
+    centres = [(b[2] + b[3]) / 2 for b in letters]
+    jump, k = max((centres[k + 1] - centres[k], k) for k in range(1, len(letters) - 2))
+    if jump < STACK_GAP * med_h:
+        return [boxes]
+    groups = [letters[:k + 1], letters[k + 1:]]
+    spans = [(min(b[2] for b in g), max(b[3] for b in g)) for g in groups]
+    for b in boxes:
+        if b in letters:
+            continue
+        best = None                                # (vertical gap, group) over letters it could merge with
+        for gi, g in enumerate(groups):
+            for lb in g:
+                ov = min(b[1], lb[1]) - max(b[0], lb[0])
+                if ov < 0.3 * min(b[1] - b[0], lb[1] - lb[0]):
+                    continue
+                gap = lb[2] - b[3] if b[3] <= lb[2] else b[2] - lb[3] if lb[3] <= b[2] else None
+                if gap is not None and gap <= 0.5 * med_h and (best is None or gap < best[0]):
+                    best = (gap, gi)       # a dot or accent sits close to its letter; farther pieces go by position
+        if best is None:
+            c = (b[2] + b[3]) / 2
+            best = (0, min(range(2), key=lambda i: min(abs(c - spans[i][0]), abs(c - spans[i][1]))))
+        groups[best[1]].append(b)
+    return [sub for g in groups for sub in _stacked(g)]
+
+
 def segment(mask: np.ndarray, bridge: np.ndarray | None = None) -> list[Line]:
     lines: list[Line] = []
     mask = despeckle(mask)
-    for y0, y1 in split_lines(mask):
-        band, underlines = _strip_underlines(mask[y0:y1])
+    for by0, by1 in split_lines(mask):
+        band, underlines = _strip_underlines(mask[by0:by1])
         lab, n = ndimage.label(band, structure=_EIGHT)
         if n == 0:
             continue
         slices = ndimage.find_objects(lab)
         boxes = [[s[1].start, s[1].stop, s[0].start, s[0].stop, k + 1] for k, s in enumerate(slices)]
-        boxes = _merge_components(boxes, lab)
-        line = Line(y0, y1, underlines=underlines)
-        for x0, x1, gy0, gy1, *labels in boxes:
-            sub = np.isin(lab[gy0:gy1, x0:x1], labels)
-            g = Glyph(x0, y0 + gy0, sub)
-            g.underlined = any(min(x1, b) - max(x0, a) >= 0.5 * (x1 - x0) for a, b in underlines)
-            g.key = glyph_key(sub)
-            line.glyphs.append(g)
-        line.glyphs.sort(key=lambda g: g.x)
-        bottoms = [g.y + g.h for g in line.glyphs]
-        vals, counts = np.unique(bottoms, return_counts=True)
-        # baseline: most common bottom among the lower half of glyph bottoms (ignores ' - ^ etc.)
-        line.baseline = int(vals[np.argmax(counts)])
-        for g in line.glyphs:
-            g.top_rel = g.y - line.baseline
-        line.gaps = [b.x - a.right for a, b in zip(line.glyphs, line.glyphs[1:])]
-        if bridge is not None and bridge.shape == mask.shape:
-            line.joined = _joined_flags(line.glyphs, bridge)
-        lines.append(line)
+        groups = _stacked(boxes)
+        for grp in groups:
+            y0, y1 = (by0, by1) if len(groups) == 1 else (by0 + min(b[2] for b in grp), by0 + max(b[3] for b in grp))
+            lines.append(_make_line(mask, bridge, lab, _merge_components(grp, lab), by0, y0, y1, underlines))
     return lines
+
+
+def _make_line(mask: np.ndarray, bridge: np.ndarray | None, lab: np.ndarray, boxes: list[list[int]],
+               by0: int, y0: int, y1: int, underlines: list[tuple[int, int]]) -> Line:
+    """One text line from merged boxes of the band starting at row by0."""
+    line = Line(y0, y1, underlines=underlines)
+    for x0, x1, gy0, gy1, *labels in boxes:
+        sub = np.isin(lab[gy0:gy1, x0:x1], labels)
+        g = Glyph(x0, by0 + gy0, sub)
+        g.underlined = any(min(x1, b) - max(x0, a) >= 0.5 * (x1 - x0) for a, b in underlines)
+        g.key = glyph_key(sub)
+        line.glyphs.append(g)
+    line.glyphs.sort(key=lambda g: g.x)
+    bottoms = [g.y + g.h for g in line.glyphs]
+    vals, counts = np.unique(bottoms, return_counts=True)
+    # baseline: most common bottom among the lower half of glyph bottoms (ignores ' - ^ etc.)
+    line.baseline = int(vals[np.argmax(counts)])
+    for g in line.glyphs:
+        g.top_rel = g.y - line.baseline
+    line.gaps = [b.x - a.right for a, b in zip(line.glyphs, line.glyphs[1:])]
+    if bridge is not None and bridge.shape == mask.shape:
+        line.joined = _joined_flags(line.glyphs, bridge)
+    return line
 
 
 _SLANT_CACHE: dict[tuple, str] = {}
