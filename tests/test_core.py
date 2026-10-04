@@ -899,3 +899,30 @@ def test_glyph_sets_record_the_version_that_learned_them(tmp_path):
     json.dump(d, open(tmp_path / "stamped.json", "w"))
     old = GlyphDB.load(tmp_path / "stamped.json")
     assert old.learned_with == "0.0.9" and old.to_json()["learned_with"] == "0.0.9"
+
+
+def test_stray_votes_are_not_ambiguity_candidates():
+    """A glyph read as 'l' 1492 times, 'I' 532 times and once each as 'le', 'sl', 'len' offers I and l
+    only; the strays would otherwise pit 'Ziel' against the valid 'Ziele' in every episode."""
+    from collections import Counter
+    from vobsub_to_srt.recognize import _candidates
+    from vobsub_to_srt.glyphdb import Variant
+
+    class Item:
+        via = "ambig"; text = None
+        variant = Variant(-43, Counter({"l": 1492, "I": 532, "le": 1, "sl": 1, "len": 1}))
+
+    class Res:
+        items = [Item()]; glyph_spans = [(0, 1)]
+
+    class Line:
+        glyphs = [None]
+
+    class DB:
+        il_identical = True
+
+    assert _candidates(DB(), Line(), Res(), 0) == ["I", "l"]
+    Item.variant = Variant(-43, Counter({"1": 3, "l": 9, "|": 1}))
+    assert _candidates(DB(), Line(), Res(), 0) == ["1", "l"]            # a supported second reading stays
+    Item.variant = Variant(-43, Counter({"rn": 4, "m": 1}))
+    assert _candidates(DB(), Line(), Res(), 0) == ["rn"]                # a fused majority reading stands

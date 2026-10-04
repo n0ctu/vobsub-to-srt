@@ -463,7 +463,13 @@ def _candidates(db: GlyphDB, line: Line, res: LineResult, k: int) -> list[str]:
     v = it.variant or db.lookup(g.key, g.top_rel)     # a near match read-only is not stored
     if v is None:
         return ["\ufffd"]
-    labels = sorted(l for l, n in v.votes.items() if n > 0 and l)
+    # a reading needs the same support as a label (MIN_VOTES): one stray vote must not turn
+    # every word with this letter into a lexicon question ("Ziel" against "Ziele" from a stray
+    # 'le'). A multi-letter reading belongs to a fused shape, so it only counts as the majority.
+    top = max(v.votes, key=v.votes.get) if v.votes else None
+    labels = sorted(l for l, n in v.votes.items() if l and n >= MIN_VOTES and (len(l) == 1 or l == top))
+    if not labels and top:
+        labels = [top]
     if labels and set(labels) <= {"I", "l"} and db.il_identical:
         return ["I", "l"]
     return labels
