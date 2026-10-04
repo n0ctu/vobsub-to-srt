@@ -29,7 +29,7 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from vobsub_to_srt.glyphdb import CLUSTER_TOL, GlyphDB, is_strict, tol_for, trusted_label  # noqa: E402
+from vobsub_to_srt.glyphdb import CLUSTER_TOL, MIN_VOTES, GlyphDB, is_strict, tol_for, trusted_label  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent / "glyph-memory"
 MERGE_SHARE = 0.5        # share of a pulled set's letter occurrences a shipped set knows bit for bit
@@ -163,7 +163,7 @@ def make_plan(path: Path, repo: Path, min_version: str, allow_unversioned: bool)
                 # an I/l cluster that collected enough reads of both is "conflicting" for the vote
                 # rule but not lost: the converter lets the word decide for such clusters
                 v = pulled.shapes[s.cluster].variant(c.top_rel, pulled.pos_tol) if s is not None else None
-                voted = {k for k, n in (v.votes.items() if v else ()) if n > 0}
+                voted = {k for k, n in (v.votes.items() if v else ()) if n >= MIN_VOTES}   # strays do not count
                 if voted and c.label in voted and voted <= {"I", "l", "|"}:
                     plan.ambiguous += 1
                 else:
