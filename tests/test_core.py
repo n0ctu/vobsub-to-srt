@@ -856,3 +856,32 @@ def test_language_guess_from_text():
     assert guess_language(en) == "en"
     assert guess_language(de) == "de"
     assert guess_language(["Hm.", "Ja."]) is None            # too little text to tell
+
+
+def test_batched_overlap_equals_single_pair():
+    import numpy as np
+    from vobsub_to_srt import transfer
+    rng = np.random.default_rng(3)
+    for _ in range(60):
+        h, w = int(rng.integers(6, 30)), int(rng.integers(3, 24))
+        a = rng.random((h, w)) < 0.45
+        refs = []
+        for k in range(int(rng.integers(1, 12))):
+            bh, bw = h + int(rng.integers(-1, 2)), w + int(rng.integers(-1, 2))
+            bits = rng.random((bh, bw)) < 0.45
+            refs.append(transfer._Ref(f"k{k}", "x", bits, 0.0, int(bits.sum())))
+        rs = transfer._Refs(refs)
+        picked = [(r, row) for rows in rs.by_h.values() for r, row in rows]
+        batched = rs.ious(a, picked).tolist()
+        assert batched == [transfer._iou(a, r.bits) for r, _ in picked]
+
+
+def test_probe_reports_each_set_tried(tmp_path):
+    from collections import Counter
+    from vobsub_to_srt.pipeline import probe
+    for name in ("one", "two"):
+        GlyphDB(name, tmp_path / f"{name}.json").save()
+    steps = []
+    db, cov, mode = probe(tmp_path, Counter(), {}, 0.5, progress=lambda *a: steps.append(a))
+    assert mode == "new" and cov == 0.0
+    assert steps == [("compare", 1, 2), ("compare", 2, 2), ("teacher", 1, 2), ("teacher", 2, 2)]

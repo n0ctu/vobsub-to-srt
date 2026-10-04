@@ -154,14 +154,17 @@ def image_id(mask: np.ndarray) -> str:
 
 
 def probe(db_dir: Path, keyfreq: Counter, glyphs: dict, min_cov: float,
-          charset: str = CHARSET_SIMPLIFIED) -> tuple[GlyphDB, float, str]:
+          charset: str = CHARSET_SIMPLIFIED, progress=None) -> tuple[GlyphDB, float, str]:
     """1) exact bitmap coverage of existing DBs (same font + raster);
     2) otherwise a DB of the same font at another raster size as teacher (scaled transfer);
-    3) otherwise a fresh DB."""
+    3) otherwise a fresh DB. `progress(stage, step, total)` is called before each set is tried."""
     total = sum(keyfreq.values()) or 1
     dbs: list[GlyphDB] = []
     best, best_cov = None, 0.0
-    for p in sorted(db_dir.glob("*.json")) if db_dir.is_dir() else []:
+    paths = sorted(db_dir.glob("*.json")) if db_dir.is_dir() else []
+    for i, p in enumerate(paths):
+        if progress:
+            progress("compare", i + 1, len(paths))
         try:
             db = GlyphDB.load(p)
         except Exception as e:  # corrupt DB should not stop the run
@@ -186,7 +189,9 @@ def probe(db_dir: Path, keyfreq: Counter, glyphs: dict, min_cov: float,
     new = GlyphDB(name, db_dir / f"{name}{suffix}.json")
     new.charset = charset
     best_tr, teacher = None, None
-    for db in dbs:
+    for i, db in enumerate(dbs):
+        if progress:
+            progress("teacher", i + 1, len(dbs))
         tr = transfer.find_scale(db, glyphs, keyfreq)
         if tr is not None:
             log.info("probe: %s as teacher at scale %.3f covers %.1f%% (confirmed transfer)",
@@ -308,7 +313,9 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
         return {"on_progress": lambda k, n: emit("vlm", phase=phase, answered=k, batch=n),
                 "on_apply": lambda: (flush_cues(), flush_glyphs())}
 
-    db, cov, probe_mode = probe(opts.db_dir, keyfreq, sample_glyph, opts.min_probe_coverage, charset)
+    emit("decoded", glyphs=sum(keyfreq.values()), shapes=len(keyfreq), seconds=round(time.time() - t0, 1))
+    db, cov, probe_mode = probe(opts.db_dir, keyfreq, sample_glyph, opts.min_probe_coverage, charset,
+                                progress=lambda stage, i, n: emit("probe_step", stage=stage, step=i, total=n))
     log.info("using DB %s (%s, coverage %.1f%%)", db.path.name if db.path else db.name, probe_mode, 100 * cov)
     emit("probe", db=db.name, mode=probe_mode, coverage=round(cov, 4))
     flush_glyphs()

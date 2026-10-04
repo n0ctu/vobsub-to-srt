@@ -402,6 +402,8 @@ function describe(e) {
     case 'queued': return e.position > 1 ? `queued at position ${e.position}; ${e.cues} cues` : `queued; ${e.cues} cues`;
     case 'queue': return null;   // shown in the progress line, not logged (it repeats every few seconds)
     case 'started': return 'started: decoding and segmenting the cues';
+    case 'decoded': return `decoded: ${e.glyphs} letters in ${e.cues} cues (${e.shapes} distinct shapes) in ${e.seconds}s; comparing with the known glyph sets`;
+    case 'probe_step': return null;   // shown in the progress line only
     case 'no_vlm': return 'this server has no vision model configured: unknown glyphs will be marked �';
     case 'notice': return e.kind === 'rescaled' ? `note: this track looks rescaled from another resolution (${Math.round(100 * e.unique_share)}% of ${e.bitmaps} letter bitmaps occur only once); reading relies on shape clustering and needs more vision requests` : `note: ${e.kind}`;
     case 'probe':
@@ -428,7 +430,9 @@ function applyProgress(st, e) {
     const ahead = e.ahead === 0 ? 'next in line' : `${e.ahead} job${e.ahead > 1 ? 's' : ''} ahead`;
     p.phase = `waiting: ${ahead}` + (r && r.cues ? ` (converting ${r.resolved || 0} of ${r.cues} cues${r.round ? `, round ${r.round}` : ''})` : '');
   }
-  if (e.event === 'started') p.phase = 'starting';
+  if (e.event === 'started') p.phase = 'decoding and segmenting';
+  if (e.event === 'decoded') p.phase = 'comparing with known glyph sets';
+  if (e.event === 'probe_step') p.phase = e.stage === 'teacher' ? `trying known sets as teachers at another size: ${e.step} of ${e.total}` : `comparing with known glyph sets: ${e.step} of ${e.total}`;
   if (e.event === 'probe') p.phase = e.mode === 'exact' ? 'reading from memory' : 'learning the glyph set';
   if (e.event === 'round') { p.round = e.round; p.phase = `round ${e.round}: ${e.unresolved} cues still unresolved`; }
   if (e.event === 'vlm') {

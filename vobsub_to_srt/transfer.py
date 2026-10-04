@@ -32,6 +32,7 @@ class _Ref:
     label: str
     bits: np.ndarray      # rescaled to the new raster
     top_rel: float        # rescaled
+    n: int = 0            # ink pixels of `bits`
 
 
 @dataclass
@@ -48,21 +49,25 @@ def resize_bits(bits: np.ndarray, scale: float) -> np.ndarray:
     return np.asarray(im) >= 128
 
 
-def _iou(a: np.ndarray, b: np.ndarray) -> float:
-    """Best IoU over +-1 px shifts."""
+def _iou(a: np.ndarray, b: np.ndarray, na: int | None = None, nb: int | None = None) -> float:
+    """Best IoU over +-1 px shifts. `na`/`nb` are the ink counts when the caller has them."""
+    na = int(np.count_nonzero(a)) if na is None else na
+    nb = int(np.count_nonzero(b)) if nb is None else nb
     h, w = max(a.shape[0], b.shape[0]) + 2, max(a.shape[1], b.shape[1]) + 2
-    A = np.zeros((h, w), bool)
-    A[1:1 + a.shape[0], 1:1 + a.shape[1]] = a
+    frame = np.zeros((h, w), bool)
+    frame[1:1 + a.shape[0], 1:1 + a.shape[1]] = a
+    bh, bw = b.shape
     best = 0.0
     for dy in (0, 1, 2):
+        if dy + bh > h:
+            continue
         for dx in (0, 1, 2):
-            if dy + b.shape[0] > h or dx + b.shape[1] > w:
+            if dx + bw > w:
                 continue
-            B = np.zeros((h, w), bool)
-            B[dy:dy + b.shape[0], dx:dx + b.shape[1]] = b
-            union = int((A | B).sum())
-            if union:
-                best = max(best, int((A & B).sum()) / union)
+            inter = int(np.count_nonzero(frame[dy:dy + bh, dx:dx + bw] & b))
+            union = na + nb - inter                 # |A u B| = |A| + |B| - |A n B|
+            if union and inter / union > best:
+                best = inter / union
     return best
 
 
@@ -72,26 +77,60 @@ def _refs(teacher: GlyphDB, scale: float) -> list[_Ref]:
         for v in s.variants:
             lab = trusted_label(v.votes)[0]
             if lab:          # confirmed, non-fragment labels only
-                out.append(_Ref(s.key, lab, resize_bits(s.bits, scale), v.top_rel * scale))
+                bits = resize_bits(s.bits, scale)
+                out.append(_Ref(s.key, lab, bits, v.top_rel * scale, int(np.count_nonzero(bits))))
     return out
 
 
+class _Refs:
+    """A teacher's rescaled shapes, stacked per bitmap size for batched overlap computation."""
+
+    def __init__(self, refs: list[_Ref]):
+        rows: dict[tuple[int, int], list[_Ref]] = {}
+        self.by_h: dict[int, list[tuple[_Ref, int]]] = {}    # height -> (ref, row in its stack)
+        for r in refs:
+            hw = r.bits.shape
+            self.by_h.setdefault(hw[0], []).append((r, len(rows.setdefault(hw, []))))
+            rows[hw].append(r)
+        self.stacks = {hw: (np.stack([r.bits for r in rs]), np.array([r.n for r in rs])) for hw, rs in rows.items()}
+
+    def ious(self, a: np.ndarray, picked: list[tuple[_Ref, int]]) -> np.ndarray:
+        """`_iou(a, r.bits)` for every picked candidate at once. Each differs from `a` by at most a
+        pixel per side, so all of them sit on one canvas; the intersection only counts inside `a`'s
+        own area, and whatever hangs over its edge never overlaps anyway."""
+        ah, aw = a.shape
+        canvas = np.zeros((len(picked), ah + 3, aw + 3), bool)
+        ns = np.zeros(len(picked), int)
+        groups: dict[tuple[int, int], list[int]] = {}
+        for i, (r, _) in enumerate(picked):
+            groups.setdefault(r.bits.shape, []).append(i)
+        for (bh, bw), idx in groups.items():
+            stack, n = self.stacks[bh, bw]
+            rows = [picked[i][1] for i in idx]
+            canvas[idx, 1:1 + bh, 1:1 + bw] = stack[rows]
+            ns[idx] = n[rows]
+        na = int(np.count_nonzero(a))
+        best = np.zeros(len(picked))
+        for oy in (-1, 0, 1):
+            for ox in (-1, 0, 1):
+                inter = (a & canvas[:, 1 - oy:1 - oy + ah, 1 - ox:1 - ox + aw]).sum(axis=(1, 2))
+                union = na + ns - inter             # |A u B| = |A| + |B| - |A n B|
+                np.maximum(best, np.divide(inter, union, out=np.zeros(len(picked)), where=union > 0), out=best)
+        return best
+
+
 def match_all(teacher: GlyphDB, glyphs: dict[str, Glyph], keyfreq: Counter, scale: float) -> Transfer:
-    refs = _refs(teacher, scale)
-    by_h: dict[int, list[_Ref]] = {}
-    for r in refs:
-        by_h.setdefault(r.bits.shape[0], []).append(r)
+    refs = _Refs(_refs(teacher, scale))
     pos_tol = max(1.5, 0.08 * (teacher.unit or 30) * scale)
     labels: dict[str, tuple[str, str]] = {}
     covered = 0
     for key, g in glyphs.items():
-        cands: list[tuple[float, _Ref]] = []
-        for dh in (-1, 0, 1):
-            for r in by_h.get(g.h + dh, ()):
-                if abs(r.bits.shape[1] - g.w) <= 1 and abs(r.top_rel - g.top_rel) <= pos_tol:
-                    cands.append((_iou(g.bits, r.bits), r))
-        if not cands:
+        gh, gw, gt = g.h, g.w, g.top_rel
+        picked = [(r, row) for dh in (-1, 0, 1) for r, row in refs.by_h.get(gh + dh, ())
+                  if abs(r.bits.shape[1] - gw) <= 1 and abs(r.top_rel - gt) <= pos_tol]
+        if not picked:
             continue
+        cands = [(v, r) for v, (r, _) in zip(refs.ious(g.bits, picked).tolist(), picked)]
         cands.sort(key=lambda c: -c[0])
         best_iou, best = cands[0]
         other = next((c[0] for c in cands[1:] if c[1].label != best.label), 0.0)
