@@ -97,11 +97,13 @@ def check_cluster(c: Cluster, target: GlyphDB, own_key: str | None) -> None:
         c.flags.append("fused letters")
     if len(c.votes) > 1:
         c.flags.append("dissent " + ",".join(f"{k}:{n}" for k, n in c.votes.most_common()))
-    nearest_other = None
+    nearest_other = None            # nearest cluster whose *confirmed* label differs (strays are what votes are for)
     for r, key, dh in target.near_candidates(c.bits, max_ratio=CLUSTER_TOL):
         if key == own_key or dh:
             continue
-        lab = target._label_of(target.shapes[key], c.top_rel)
+        canon = target.shapes[target.shapes[key].cluster]
+        v = canon.variant(c.top_rel, target.pos_tol)
+        lab = trusted_label(v.votes)[0] if v is not None else None
         if lab and lab != c.label and (nearest_other is None or r < nearest_other[0]):
             nearest_other = (r, lab)
     if nearest_other is None:
@@ -166,6 +168,8 @@ def make_plan(path: Path, repo: Path, min_version: str, allow_unversioned: bool)
                 plan.new.append(c)
         if plan.changed:
             plan.refused.append(f"{len(plan.changed)} shipped labels changed")
+        if plan.lost:
+            plan.refused.append(f"would drop {plan.lost} confirmed labels the shipped set has (merged from elsewhere?)")
         return plan
 
     # another name: the same font at the same size as a shipped set?
@@ -181,6 +185,10 @@ def make_plan(path: Path, repo: Path, min_version: str, allow_unversioned: bool)
     if best and best_share >= MERGE_SHARE:
         stem, base = best
         plan.action, plan.target = "merge", stem
+        if plan.name in base.merged_from:
+            plan.action = "skip"
+            plan.refused.append(f"already merged into {stem}")
+            return plan
         was = confirmed_clusters(base)
         for key, c in mine.items():
             if key in was:
@@ -195,6 +203,8 @@ def make_plan(path: Path, repo: Path, min_version: str, allow_unversioned: bool)
     for key, c in mine.items():
         check_cluster(c, pulled, key)
         plan.new.append(c)
+    if not plan.new:
+        plan.refused.append("no confirmed labels at all (nothing the converter would trust)")
     return plan
 
 
@@ -267,7 +277,7 @@ def sheet(plans: list[Plan], out: Path, scale: int = 3, cols: int = 8) -> int:
 
 # ---------- apply ----------
 def apply_plan(plan: Plan, repo: Path, force: bool) -> str:
-    if plan.refused and not force:
+    if plan.action == "skip" or (plan.refused and not force):
         return f"{plan.name}: skipped ({'; '.join(plan.refused)})"
     if plan.flagged and not force:
         return f"{plan.name}: skipped ({len(plan.flagged)} flagged clusters; review the sheet, then --force)"
@@ -299,6 +309,7 @@ def apply_plan(plan: Plan, repo: Path, force: bool) -> str:
     for k, (lc, sc) in pulled.pair_gaps.items():
         target.pair_gaps[k][0] += lc
         target.pair_gaps[k][1] += sc
+    target.merged_from.append(plan.name)
     target.journal = None
     target.dirty = True
     target.save(final=True)
@@ -332,7 +343,7 @@ def main() -> None:
     if a.cmd == "plan":
         for p in plans:
             print(describe(p))
-        print(f"baseline would hold {len(list(a.repo.glob('*.json'))) + sum(1 for p in plans if p.action == 'new')} sets")
+        print(f"baseline would hold {len(list(a.repo.glob('*.json'))) + sum(1 for p in plans if p.action == 'new' and not p.refused)} sets")
     elif a.cmd == "sheet":
         n = sheet(plans, a.out)
         print(f"{n} new clusters on {a.out}" if n else "nothing new to show")

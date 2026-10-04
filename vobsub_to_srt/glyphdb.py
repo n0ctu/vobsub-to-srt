@@ -310,6 +310,7 @@ class GlyphDB:
         self.unit: float | None = None
         self.parent: str | None = None     # teacher DB this one was bootstrapped from (other raster)
         self.learned_with: str | None = app_version()   # app version that created the set (kept on load)
+        self.merged_from: list[str] = []                 # other sets whose votes were merged in (import tool)
         # hashes of cue images already learned from: re-reading the same image (re-runs, duplicate
         # cues) is not independent evidence and must not confirm a label
         self.learned_sources: set[str] = set()
@@ -834,6 +835,7 @@ class GlyphDB:
             "version": 2,
             "learned_with": self.learned_with,
             "saved_with": app_version(),
+            "merged_from": self.merged_from,
             "charset": self.charset,
             "unit": self.unit,
             "parent": self.parent,
@@ -860,6 +862,7 @@ class GlyphDB:
         db.unit = d.get("unit")
         db.parent = d.get("parent")
         db.learned_with = d.get("learned_with")
+        db.merged_from = list(d.get("merged_from") or [])
         db.charset = d.get("charset", "literal")     # DBs from before simplification are literal
         db.learned_sources = set(d.get("learned_sources", []))      # legacy inline
         for s in d["shapes"]:
