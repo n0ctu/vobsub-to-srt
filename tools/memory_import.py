@@ -125,6 +125,7 @@ class Plan:
     new: list[Cluster]          # confirmed clusters the baseline does not have yet
     changed: list[tuple[str, str, str]]   # (key, old label, new label) on updates
     lost: int = 0               # shipped confirmed labels the update no longer confirms
+    ambiguous: int = 0          # ... of which I/l clusters that became a word-decided ambiguity
     refused: list[str] = field(default_factory=list)
 
     @property
@@ -154,12 +155,19 @@ def make_plan(path: Path, repo: Path, min_version: str, allow_unversioned: bool)
         was = confirmed_clusters(base)
         for key, c in was.items():
             now = mine.get(key)
-            if now is None:
+            s = pulled.shapes.get(key)
+            if now is None and s is not None:
                 # the cluster may have been joined into another one: follow the pulled cluster chain
-                s = pulled.shapes.get(key)
-                now = mine.get(s.cluster) if s else None
+                now = mine.get(s.cluster)
             if now is None:
-                plan.lost += 1
+                # an I/l cluster that collected enough reads of both is "conflicting" for the vote
+                # rule but not lost: the converter lets the word decide for such clusters
+                v = pulled.shapes[s.cluster].variant(c.top_rel, pulled.pos_tol) if s is not None else None
+                voted = {k for k, n in (v.votes.items() if v else ()) if n > 0}
+                if voted and c.label in voted and voted <= {"I", "l", "|"}:
+                    plan.ambiguous += 1
+                else:
+                    plan.lost += 1
             elif now.label != c.label:
                 plan.changed.append((key, c.label, now.label))
         for key, c in mine.items():
@@ -212,7 +220,7 @@ def describe(plan: Plan) -> str:
     head = f"{plan.name:24} {plan.action:6}" + (f" -> {plan.target}" if plan.target and plan.target != plan.name else "")
     head += f"  learned_with {plan.learned_with or '-'}  new confirmed clusters {len(plan.new)}"
     if plan.action == "update":
-        head += f"  changed {len(plan.changed)}  lost {plan.lost}"
+        head += f"  changed {len(plan.changed)}  lost {plan.lost}" + (f"  I/l now ambiguous {plan.ambiguous}" if plan.ambiguous else "")
     if plan.flagged:
         head += f"  flagged {len(plan.flagged)}"
     lines = [head]
