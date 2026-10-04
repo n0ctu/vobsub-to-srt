@@ -236,7 +236,8 @@ def glyph_stats() -> dict:
             if any(len(lab) > 1 for v in sh.get("variants", []) for lab in v.get("votes", {})):
                 fused += 1
         sets.append({"name": f.stem, "shapes": n_shapes, "clusters": n_clusters, "unit": d.get("unit"),
-                     "updated": int(f.stat().st_mtime), "baseline": f.name in baseline})
+                     "updated": int(f.stat().st_mtime), "baseline": f.name in baseline,
+                     "learned_with": d.get("learned_with")})
     sets.sort(key=lambda s: -s["updated"])
     value = {"fonts": len(files), "fonts_learned_here": sum(1 for f in files if f.name not in baseline),
              "shapes": shapes, "italic_shapes": italic, "fused_shapes": fused, "sets": sets}
@@ -426,6 +427,26 @@ async def glyph_set(name: str):
     if inv is None:
         raise HTTPException(404, "unknown glyph set")
     return inv
+
+
+@app.get("/api/glyphs/{name}/download")
+async def glyph_set_download(name: str, request: Request):
+    """The publishable glyph set as a file: letter bitmaps, labels, votes and gap statistics. Word
+    memory, source hashes and training counts stay on the server (they live in a separate file), so
+    anyone may fetch a set and contribute it to the repository's baseline (tools/memory_import.py)."""
+    if not name or _STEM.search(name) or name.startswith("."):
+        raise HTTPException(404, "unknown glyph set")
+    path = DATA / "glyph-memory" / f"{name}.json"
+    if not path.is_file():
+        raise HTTPException(404, "unknown glyph set")
+    etag = f'"{path.stat().st_mtime_ns}-{path.stat().st_size}"'
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+    from .glyphdb import GlyphDB
+    body = await asyncio.to_thread(lambda: json.dumps(GlyphDB.load(path).to_json()))
+    return Response(body, media_type="application/json",
+                    headers={"ETag": etag, "Cache-Control": "public, max-age=300",
+                             "Content-Disposition": f'attachment; filename="{name}.json"'})
 
 
 @app.get("/healthz")

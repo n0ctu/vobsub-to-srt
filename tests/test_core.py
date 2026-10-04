@@ -892,5 +892,10 @@ def test_glyph_sets_record_the_version_that_learned_them(tmp_path):
     db = GlyphDB("stamped", tmp_path / "stamped.json")
     db.save()
     import json
-    assert json.load(open(tmp_path / "stamped.json"))["learned_with"] == app_version()
+    d = json.load(open(tmp_path / "stamped.json"))
+    assert d["learned_with"] == app_version() == d["saved_with"]
     assert app_version() and app_version() != "unknown"
+    d["learned_with"] = "0.0.9"                      # an older set keeps the version that created it
+    json.dump(d, open(tmp_path / "stamped.json", "w"))
+    old = GlyphDB.load(tmp_path / "stamped.json")
+    assert old.learned_with == "0.0.9" and old.to_json()["learned_with"] == "0.0.9"

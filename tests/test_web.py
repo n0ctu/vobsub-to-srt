@@ -83,6 +83,19 @@ def test_stats_and_index(client):
     s = client.get("/api/stats").json()
     assert "fonts" in s and s["limits"]["max_cues"] == web.MAX_CUES
     assert isinstance(s["version"], str) and s["version"]                    # shown in the page footer
+
+
+def test_glyph_set_download_is_the_publishable_file(client):
+    gm = web.DATA / "glyph-memory"; gm.mkdir(parents=True, exist_ok=True)
+    (gm / "demo-set.json").write_text(json.dumps({"name": "demo-set", "version": 2, "charset": "simplified",
+                                                  "shapes": [], "words": {"a|b": {"ab": 1}}, "learned_sources": ["x"]}))
+    r = client.get("/api/glyphs/demo-set/download")
+    assert r.status_code == 200 and r.headers["content-type"].startswith("application/json")
+    d = r.json()
+    assert d["name"] == "demo-set" and "shapes" in d and "learned_with" in d
+    assert "words" not in d and "learned_sources" not in d                     # private data never leaves
+    assert client.get("/api/glyphs/demo-set/download", headers={"If-None-Match": r.headers["etag"]}).status_code == 304
+    assert client.get("/api/glyphs/../etc/download").status_code == 404
     assert "<title>VobSub to SRT Tool" in client.get("/").text
 
 
