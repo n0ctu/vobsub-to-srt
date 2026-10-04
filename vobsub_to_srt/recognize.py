@@ -9,7 +9,7 @@ from collections import Counter
 
 import re as _re
 
-from .glyphdb import (CLUSTER_TOL, letters_in, local_diff_ratio, OVERRIDE_SHARE, OVERRIDE_VOTES, PROTO_MARGIN, PROTO_MIN_PX, PROTO_STRICT_TOL, PROTO_TOL, TOLERANT_MARGIN,
+from .glyphdb import (CLUSTER_TOL, MIN_VOTES, letters_in, local_diff_ratio, OVERRIDE_SHARE, OVERRIDE_VOTES, PROTO_MARGIN, PROTO_MIN_PX, PROTO_STRICT_TOL, PROTO_TOL, TOLERANT_MARGIN,
                       GlyphDB, Variant, diff_ratio, is_strict, tol_for, topology, trusted_label)
 from .styling import inherit_punct_styles, majority_style, render_styled
 from .segment import Glyph, Line
@@ -432,7 +432,9 @@ def _resolve_words(db: GlyphDB, line: Line, res: LineResult, lexicon=None) -> No
             continue
         gkeys = [line.glyphs[j].key for k in range(a, b) for j in range(*res.glyph_spans[k])]
         mem = db.words.get("|".join(gkeys))
-        word = trusted_label(mem)[0] if mem else None
+        # the word memory holds the model's spellings of one glyph sequence (I/l): a plain 2/3
+        # majority decides, the glyphs themselves are confirmed shapes
+        word = trusted_label(mem, dissent_votes=MIN_VOTES)[0] if mem else None
         via = "word"
         if word is None and lexicon is not None:
             word = lexicon.resolve([_candidates(db, line, res, k) for k in range(a, b)])

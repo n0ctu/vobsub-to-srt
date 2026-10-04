@@ -123,9 +123,18 @@ def test_label_needs_two_thirds_majority():
     from vobsub_to_srt.glyphdb import trusted_label
     assert trusted_label(Counter({"a": 1}))[0] is None            # seen once: quarantined
     assert trusted_label(Counter({"a": 2}))[0] == "a"
-    assert trusted_label(Counter({"a": 2, "e": 1}))[0] == "a"     # exactly 2/3
+    assert trusted_label(Counter({"a": 2, "e": 1}))[0] is None    # a dissenting read: the majority needs a third
+    assert trusted_label(Counter({"a": 3, "e": 1}))[0] == "a"
+    assert trusted_label(Counter({"6": 3, "8": 2}))[0] is None    # below 2/3
     assert trusted_label(Counter({"a": 2, "e": 2}))[0] is None
+    assert trusted_label(Counter({"a": 2, "e": 0}))[0] == "a"     # a cleared vote is not dissent
     assert trusted_label(Counter({"I": 4, "1": 1}))[0] == "I"
+
+
+def test_confusable_digits_use_strict_tolerance():
+    from vobsub_to_srt.glyphdb import CLUSTER_TOL, STRICT_TOL, tol_for
+    assert tol_for("6") == STRICT_TOL and tol_for("8") == STRICT_TOL and tol_for("g") == STRICT_TOL
+    assert tol_for("e") == CLUSTER_TOL and tol_for("7") == CLUSTER_TOL
 
 
 def test_repeated_glyph_in_one_cue_votes_once():

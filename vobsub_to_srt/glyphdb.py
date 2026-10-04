@@ -21,6 +21,7 @@ SEQ_PART_TOL = 0.2     # a sequence part may snap to a sequence-bearing cluster 
 XHEIGHT_CHARS = set("acemnorsuvwxz")   # lowercase letters without ascender/descender
 MIN_VOTES = 2          # a label needs this many independent observations (cues) ...
 MIN_SHARE = 2 / 3      # ... and at least this share of all votes before it is trusted
+DISSENT_VOTES = 3      # a label that was ever read differently needs this many agreeing reads
 # overriding a VLM reading needs more evidence than reading a glyph: the majority may just be the
 # VLM's own habit (e.g. writing ' for the acute accent in O´Neil in 2 of 3 cues)
 OVERRIDE_VOTES = 3
@@ -44,7 +45,8 @@ PROTO_MIN_PX = 3          # ... or at most this many disagreeing stable pixels (
 PROTO_STABLE = 0.9        # a pixel is stable if ink in >= 90% or <= 10% of the samples
 MIN_MEMBER_SEEN = 2       # a jitter member seen once is not kept (rescaled tracks: thousands per file)
 MAX_MEMBERS = 24          # most frequent members kept per cluster; the rest is read via the near search
-STRICT = set("Il|i1!jíìïî")   # punctuation is told apart by size and baseline position instead
+STRICT = set("Il|i1!jíìïî") | set("035689g")   # I/l & co; digits (and g/9) a jittered font blurs into each other.
+                                               # Punctuation is told apart by size and baseline position instead
 _ALIGN = [(dy, dx) for dy in (0, 1, 2) for dx in (0, 1, 2)]   # the 3x3 alignments of a near comparison
 
 
@@ -122,15 +124,19 @@ def tol_for(*labels: str | None) -> float:
     return STRICT_TOL if any(is_strict(l) for l in labels) else CLUSTER_TOL
 
 
-def trusted_label(votes: Counter) -> tuple[str | None, str]:
-    """Majority label if confirmed (>= MIN_VOTES and >= MIN_SHARE of votes), else (None, reason)."""
+def trusted_label(votes: Counter, dissent_votes: int = DISSENT_VOTES) -> tuple[str | None, str]:
+    """Majority label if confirmed (>= MIN_VOTES, >= MIN_SHARE of votes, >= DISSENT_VOTES after any
+    disagreement), else (None, reason)."""
     if not votes:
         return None, "no votes"
     total = sum(votes.values())
     top, n1 = votes.most_common(1)[0]
     if total < MIN_VOTES:
         return None, f"unconfirmed ({top!r} seen once)"
-    if n1 < MIN_SHARE * total:
+    # two unanimous reads suffice; once any read disagreed, the majority must be read a third time
+    # (a 6/8 cluster read 6, 6, 8 stays open until a fourth read settles it)
+    dissent = sum(1 for n in votes.values() if n > 0) > 1
+    if n1 < MIN_SHARE * total or (dissent and n1 < dissent_votes):
         return None, f"conflicting votes {dict(votes)}"
     return top, ""
 
