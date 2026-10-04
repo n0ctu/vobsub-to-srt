@@ -885,3 +885,12 @@ def test_probe_reports_each_set_tried(tmp_path):
     db, cov, mode = probe(tmp_path, Counter(), {}, 0.5, progress=lambda *a: steps.append(a))
     assert mode == "new" and cov == 0.0
     assert steps == [("compare", 1, 2), ("compare", 2, 2), ("teacher", 1, 2), ("teacher", 2, 2)]
+
+
+def test_glyph_sets_record_the_version_that_learned_them(tmp_path):
+    from vobsub_to_srt.version import app_version
+    db = GlyphDB("stamped", tmp_path / "stamped.json")
+    db.save()
+    import json
+    assert json.load(open(tmp_path / "stamped.json"))["learned_with"] == app_version()
+    assert app_version() and app_version() != "unknown"

@@ -82,6 +82,7 @@ def test_stats_and_index(client):
     assert client.get("/healthz").json() == {"ok": True}
     s = client.get("/api/stats").json()
     assert "fonts" in s and s["limits"]["max_cues"] == web.MAX_CUES
+    assert isinstance(s["version"], str) and s["version"]                    # shown in the page footer
     assert "<title>VobSub to SRT Tool" in client.get("/").text
 
 

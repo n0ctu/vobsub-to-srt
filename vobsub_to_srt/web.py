@@ -33,6 +33,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 
 from . import job as jobmod
 from .job import JobConfig
+from .version import app_version
 from .pipeline import VobSubData
 from .pool import WorkerPool
 from .names import random_db_name  # noqa: F401  (re-exported for the stats page)
@@ -406,7 +407,7 @@ async def job_report(job_id: str):
 @app.get("/api/stats")
 async def stats():
     g = glyph_stats()
-    return {"fonts": g["fonts"], "queued": queue.qsize(),
+    return {"version": app_version(), "fonts": g["fonts"], "queued": queue.qsize(),
             "running": sum(1 for j in jobs.values() if j.status == "running"),
             "limits": {"jobs_per_hour": JOBS_PER_HOUR, "vlm_per_day": VLM_PER_DAY, "max_vlm_cues": MAX_VLM_CUES,
                        "max_cues": MAX_CUES, "job_ttl": JOB_TTL},

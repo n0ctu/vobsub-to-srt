@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+from .version import app_version
 
 POS_TOL_UNITS = 0.05   # tolerance on top_rel (baseline jitter), in font units (x-height)
 RESCALED_POS_TOL = 2   # ... extra pixels for a rescaled track (vertical jitter)
@@ -830,6 +831,7 @@ class GlyphDB:
         return {
             "name": self.name,
             "version": 2,
+            "learned_with": app_version(),
             "charset": self.charset,
             "unit": self.unit,
             "parent": self.parent,

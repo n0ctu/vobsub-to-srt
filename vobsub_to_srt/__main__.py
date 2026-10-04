@@ -13,6 +13,8 @@ from .vlm import VLMClient, endpoint_configured
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="VobSub -> SRT with self-healing nOCR and VLM fallback")
+    from .version import app_version
+    ap.add_argument("--version", action="version", version=f"vobsub-to-srt {app_version()}")
     ap.add_argument("inputs", nargs="+", type=Path, help=".idx files")
     ap.add_argument("--glyph-memory-dir", type=Path, default=Path("glyph-memory"),
                     help="font glyph DBs; the repo ships a baseline here, new fonts are added next to it")
