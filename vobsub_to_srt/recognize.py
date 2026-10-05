@@ -151,13 +151,20 @@ def _decide(v: Variant, db: GlyphDB | None = None) -> tuple[str | None, str]:
     # a single stray reading among many (one 'L' next to 112 'I' and 197 'l' in a font that draws
     # I and l alike) must not hide that the cluster is an I/l pair: without this, the cluster fell
     # to the majority rule, failed it, and 210 cues of one file went back to the model
-    labels = {k for k, n in votes.items() if n > 0 and not (n == 1 and total >= STRAY_TOTAL)}
+    labels = voted_labels(votes)
     if confusable(labels):
         return None, "ambiguous I/l"
     label, reason = trusted_label(votes)
     if label in ("I", "l") and db is not None and db.il_identical:
         return None, "ambiguous I/l"
     return label, reason
+
+
+def voted_labels(votes: Counter) -> set[str]:
+    """The labels a cluster was read as, without a single stray reading among many: one 'J' next
+    to 121 'l' and 14 'I' must not hide that the cluster is the font's I/l pair."""
+    total = sum(n for n in votes.values() if n > 0)
+    return {k for k, n in votes.items() if n > 0 and not (n == 1 and total >= STRAY_TOTAL)}
 
 
 def confirmed(v: Variant | None) -> str | None:
@@ -200,9 +207,16 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
         label = decided.get(id(v))
         if id(v) not in decided:
             label = decided[id(v)] = _decide(v, db)[0]
-        if label is None or label == "" or (dh and is_strict(label)):
+        if label is None or label == "":
             continue
         tol = tol_for(label)
+        if dh and is_strict(label):
+            # a strict letter one pixel taller or shorter: jitter on a rescaled track when the
+            # bitmap is within the strict tolerance and no cluster reading differently is nearby
+            # (a g variant with no q or 9 around); never with a wider tolerance, a letter the set
+            # has not learned yet may sit just beyond it (an 8 next to the only 6)
+            if r > tol or not db.rival_free(g.bits, g.top_rel, label, r):
+                continue
         if r <= tol and (letters_in(label) < 2 or local_diff_ratio(g.bits, db.shapes[key].bits) <= tol):
             cands.append((r, key, v, label))      # several touching letters: the difference may not sit in one of them
     if not cands and db.protos:
@@ -225,7 +239,7 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
             tol = PROTO_TOL if label and not is_strict(label) else PROTO_STRICT_TOL
             if d <= tol or px <= PROTO_MIN_PX:
                 if label is None:
-                    if confusable({k for k, n in v.votes.items() if n > 0} | ({"I", "l"} if db.il_identical else set())):
+                    if confusable(voted_labels(v.votes) | ({"I", "l"} if db.il_identical else set())):
                         return canon, v, d              # the font's I/l cluster: the word decides
                     return None, None, d                # unconfirmed cluster: wait for the VLM
                 # identical stable pixels outweigh a word-slant vote; otherwise slant/weight must agree
@@ -256,7 +270,7 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
             if v is not None and topology(key, db.shapes[key].bits) == topo:
                 ordered.append((r, key, v, _decide(v, db)[0], dh))
         for r, key, v, label, dh in ordered:
-            if label is None and confusable({k for k, n in v.votes.items() if n > 0} | ({"I", "l"} if db.il_identical else set())):
+            if label is None and confusable(voted_labels(v.votes) | ({"I", "l"} if db.il_identical else set())):
                 # joining the font's I/l cluster: the word decides the letter anyway. One pixel of
                 # height is jitter when the font draws I and l alike; otherwise it may be the
                 # very difference between them and the join needs the same height.
@@ -269,7 +283,7 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
                 # cluster is equally near and the twin's only reading agrees with it, the
                 # confirmed cluster decides; a twin that reads differently, or stands alone, is
                 # still a reason to wait for the model.
-                votes = {k for k, n in v.votes.items() if n > 0}
+                votes = voted_labels(v.votes)
                 twin = next((c for c in ordered if c[3] and c[0] - r < TOLERANT_MARGIN), None)
                 if twin is not None and (not votes or votes == {twin[3]}):
                     continue

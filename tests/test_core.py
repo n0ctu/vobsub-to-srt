@@ -173,7 +173,7 @@ def test_confirmed_glyph_overrides_vlm_misread():
         learn_cue(db, segment(render("hello")), "hello", 12)
     lines = segment(render("hello"))
     lr = learn_cue(db, lines, "hallo", 12)          # VLM misreads one confirmed glyph
-    assert lr.learned and lr.conflicts
+    assert not lr.learned and lr.conflicts          # nothing in a contradicting answer is evidence
     text, corr = restyle(lines, lr.alignments, lambda g, s: s)
     assert text == "hello" and corr == ["'a'->'e'"]
 
@@ -926,3 +926,52 @@ def test_stray_votes_are_not_ambiguity_candidates():
     assert _candidates(DB(), Line(), Res(), 0) == ["1", "l"]            # a supported second reading stays
     Item.variant = Variant(-43, Counter({"rn": 4, "m": 1}))
     assert _candidates(DB(), Line(), Res(), 0) == ["rn"]                # a fused majority reading stands
+
+
+def test_contradicting_answer_teaches_nothing():
+    """'Erschießen' read as 'Erschließen': the surplus l contradicts confirmed letters and the ß at the
+    end would have absorbed 'eß'. No glyph of such an answer gets a vote, not even the unknown one."""
+    db = GlyphDB("t")
+    base = "hallo das ist ein test schie"
+    for _ in range(3):
+        learn_cue(db, segment(render(base)), base, 12)
+    lines = segment(render(base + "ß"))
+    lr = learn_cue(db, lines, base[:-5] + "schließ", 12)
+    assert not lr.learned
+    g = lines[0].glyphs[-1]                                              # the ß: still unknown
+    v = db.lookup(g.key, g.top_rel)
+    assert v is None or not +v.votes
+
+
+def test_two_letters_need_a_glyph_wide_enough():
+    """A single glyph as wide as one letter cannot be 'eß' when the set knows how wide e and ß are."""
+    db = GlyphDB("t")
+    base = "hallo das ist ein test eßen"
+    for _ in range(3):
+        learn_cue(db, segment(render(base)), base, 12)
+    w = db.letter_widths()
+    assert db.fits_width("rw", int(w["e"] * 2.2)) and not db.fits_width("eß", int(w["e"]))
+    lines = segment(render(base[:-4] + "ßen"))
+    lr = learn_cue(db, lines, base, 12)                                  # one letter too many
+    assert not lr.learned
+    g = lines[0].glyphs[-3]                                              # the ß got no 'eß' vote
+    v = db.lookup(g.key, g.top_rel)
+    assert v is None or "eß" not in +v.votes
+
+
+def test_seed_installs_and_replaces_by_version(tmp_path):
+    import json
+    from vobsub_to_srt.seed import seed
+    base, data = tmp_path / "base", tmp_path / "data"
+    base.mkdir()
+    (base / "one.json").write_text(json.dumps({"name": "one", "shapes": []}))
+    assert seed(base, data, version="0.2.1") == ["one.json: installed"]
+    assert json.loads((data / "one.json").read_text())["seeded_from"] == "0.2.1"
+    assert seed(base, data, version="0.2.1") == []                                  # same image: untouched
+    (data / "one.json").write_text(json.dumps({"name": "one", "shapes": [1], "seeded_from": "0.2.1"}))   # grew on the server
+    notes = seed(base, data, version="0.3.0")
+    assert notes == ["one.json: replaced (was seeded from 0.2.1; old copy archived)"]
+    assert json.loads((data / "superseded" / "one.0.2.1.json").read_text())["shapes"] == [1]
+    assert json.loads((data / "one.json").read_text())["seeded_from"] == "0.3.0"
+    (data / "two.json").write_text(json.dumps({"name": "two", "shapes": []}))     # a set learned there: untouched
+    assert seed(base, data, version="0.3.0") == [] and (data / "two.json").exists()

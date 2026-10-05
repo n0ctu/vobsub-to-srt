@@ -35,6 +35,9 @@ OVERRIDE_SHARE = 0.75
 # row or a position (I/l, i/l, 1, punctuation) never cluster across a height difference.
 CLUSTER_TOL = 0.12
 STRICT_TOL = 0.05       # for strict glyphs: an i differs from an l by its dot gap, ~0.1 of the ink
+FUSED_WIDTH_SHARE = 0.7 # a multi-letter reading needs a glyph at least this wide relative to the letters
+STRICT_MARGIN = 0.05    # ... unless no cluster reading differently lies within this of the match (rival_free)
+LOOKALIKES = ("Il1|!iíìïîj", "035689gq")   # classes whose members a font may draw alike
 CLUSTER_MARGIN = 0.06     # lead over the nearest shape with a different label
 TOLERANT_TOL = 0.05       # edge-tolerant difference accepted as "the same glyph, jittered" (recognize.near_match stage 2)
 TOLERANT_MARGIN = 0.03    # ... unless another label's shape is nearly as close
@@ -300,6 +303,8 @@ class GlyphDB:
         self.by_size: dict[tuple[int, int], list[str]] = defaultdict(list)
         self._stacks: dict[tuple[int, int], tuple] = {}   # size bucket -> (keys, stacked bits, ink counts)
         self._near_cache: dict[tuple[str, float], tuple[tuple, list]] = {}   # (glyph key, tol) -> (bucket stamp, result)
+        self._lookalike_cache: dict[tuple[str, int], bool] = {}            # (label, height) -> lookalike_known
+        self._width_cache: dict[str, float] | None = None                  # label -> median width of its clusters
         self._tstacks: dict[tuple[int, int], tuple[list[str], np.ndarray, np.ndarray]] = {}   # + dilated bits
         self._soft: dict[str, str] = {}           # soft_canonical cache, cleared when shapes are added
         self.dirty = False
@@ -311,6 +316,7 @@ class GlyphDB:
         self.parent: str | None = None     # teacher DB this one was bootstrapped from (other raster)
         self.learned_with: str | None = app_version()   # app version that created the set (kept on load)
         self.merged_from: list[str] = []                 # other sets whose votes were merged in (import tool)
+        self.seeded_from: str | None = None              # image version that installed this copy (docker seed)
         # hashes of cue images already learned from: re-reading the same image (re-runs, duplicate
         # cues) is not independent evidence and must not confirm a label
         self.learned_sources: set[str] = set()
@@ -477,19 +483,91 @@ class GlyphDB:
         out.sort(key=lambda c: c[0])
         return out
 
+    def letter_widths(self) -> dict[str, float]:
+        """Median bitmap width per confirmed single-letter label (recomputed after new votes)."""
+        if self._width_cache is None:
+            acc: dict[str, list[int]] = {}
+            for s in self.shapes.values():
+                if s.cluster != s.key:
+                    continue
+                for v in s.variants:
+                    lab = trusted_label(v.votes)[0]
+                    if lab and len(lab) == 1:
+                        acc.setdefault(lab, []).append(int(s.bits.shape[1]))
+            self._width_cache = {k: float(np.median(w)) for k, w in acc.items()}
+        return self._width_cache
+
+    def fits_width(self, text: str, width: int) -> bool:
+        """Can a glyph `width` pixels wide hold `text`? Judged by the set's own letter widths; a
+        set that knows nothing yet cannot judge (True). A glyph narrower than 0.7 of the letters'
+        summed widths cannot be two letters: an aligner that pushed a surplus letter onto it was
+        placing a model error, not reading a fused pair."""
+        widths = self.letter_widths()
+        if len(text) < 2 or not widths:
+            return True
+        typical = float(np.median(list(widths.values())))
+        expected = sum(widths.get(c, typical) for c in text)
+        return width >= FUSED_WIDTH_SHARE * expected
+
+    def lookalike_known(self, label: str, h: int) -> bool:
+        """Has the set confirmed a look-alike of `label` (another letter of its class) at about
+        this height? Only then does the absence of a rival near a match mean anything: before
+        the first I is learned, a one-row-shorter l must stay a question, not read as l."""
+        cls = next((c for c in LOOKALIKES if label in c), None)
+        if cls is None:
+            return False
+        hit = self._lookalike_cache.get((label, h))
+        if hit is None:
+            hit = False
+            for s in self.shapes.values():
+                if s.cluster != s.key or abs(s.bits.shape[0] - h) > 3:
+                    continue
+                for v in s.variants:
+                    lab = trusted_label(v.votes)[0]
+                    if lab and lab != label and lab in cls:
+                        hit = True
+                        break
+                if hit:
+                    break
+            self._lookalike_cache[(label, h)] = hit
+        return hit
+
+    def rival_free(self, bits: np.ndarray, top_rel: int, label: str, r: float, exclude: str | None = None) -> bool:
+        """No cluster reading differently from `label` within STRICT_MARGIN of a match at `r`,
+        in a set that knows a look-alike of the letter. Used to let a strict letter (I l 1,
+        digits, g) bridge one pixel of height on a rescaled track; the strict tolerance itself
+        stays, a look-alike the set has not learned yet may sit just beyond it."""
+        if not self.lookalike_known(label, bits.shape[0]):
+            return False
+        for r2, key, dh in self.near_candidates(bits, max_ratio=min(0.3, r + STRICT_MARGIN)):
+            shape = self.shapes[key]
+            if exclude is not None and shape.cluster == exclude:
+                continue
+            v = self.shapes[shape.cluster].variant(top_rel, self.pos_tol)
+            votes = +v.votes if v is not None else None
+            if votes and votes.most_common(1)[0][0] != label:
+                return False
+        return True
+
     def find_cluster(self, bits: np.ndarray, top_rel: int, label: str | None = None,
                      key: str | None = None) -> str | None:
         """Canonical key of the cluster a new shape belongs to, or None if it starts its own.
-        Same height only when the new label or the candidate's label is strict (I/l & co)."""
+        Same height and the strict tolerance when the new label or the candidate's label is
+        strict (I/l & co), unless no look-alike cluster exists nearby (rival_free)."""
         cands: list[tuple[float, str, str | None]] = []
         for r, key, dh in self.near_candidates(bits, key=key):
             shape = self.shapes[key]
             if self.shapes[shape.cluster].variant(top_rel, self.pos_tol) is None:
                 continue
             lab = self._label_of(shape, top_rel)
-            if dh and (is_strict(label) or is_strict(lab)):
-                continue
             tol = tol_for(label, lab)
+            if dh and (is_strict(label) or is_strict(lab)):
+                # one pixel of height: jitter, when within the strict tolerance and no cluster
+                # reading differently is nearby (never a wider tolerance, see near_match)
+                want = lab or label
+                if r > tol or want is None or (label and lab and label != lab) \
+                        or not self.rival_free(bits, top_rel, want, r, exclude=shape.cluster):
+                    continue
             if r <= tol and (letters_in(label, lab) < 2 or local_diff_ratio(bits, shape.bits) <= tol):
                 cands.append((r, shape.cluster, lab))
         if not cands:
@@ -564,6 +642,10 @@ class GlyphDB:
             once.add(tag)
         self._log("vote", key, bits, top_rel, label, style, weight, derived_from)
         v.votes[label] += weight
+        if v.votes[label] <= 3:
+            self._width_cache = None               # a label may just have been confirmed
+            if any(label in c for c in LOOKALIKES):
+                self._lookalike_cache.clear()      # a look-alike may just have been confirmed
         if label in ("I", "l"):
             self._il_cache = (-1, False)
         for f in "bi":
@@ -836,6 +918,7 @@ class GlyphDB:
             "learned_with": self.learned_with,
             "saved_with": app_version(),
             "merged_from": self.merged_from,
+            "seeded_from": self.seeded_from,
             "charset": self.charset,
             "unit": self.unit,
             "parent": self.parent,
@@ -863,6 +946,7 @@ class GlyphDB:
         db.parent = d.get("parent")
         db.learned_with = d.get("learned_with")
         db.merged_from = list(d.get("merged_from") or [])
+        db.seeded_from = d.get("seeded_from")
         db.charset = d.get("charset", "literal")     # DBs from before simplification are literal
         db.learned_sources = set(d.get("learned_sources", []))      # legacy inline
         for s in d["shapes"]:

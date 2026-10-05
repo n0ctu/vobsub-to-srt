@@ -278,3 +278,44 @@ def test_jittered_sequence_parts_snap_to_the_sequence_cluster_for_the_key():
     far[0, :] ^= True                    # a whole row differs: beyond the cluster tolerance for 35 px, within the key tolerance
     assert db.find_cluster(far, -30) is None
     assert db.seq_label(pair(far, base, "b")) == '"'
+
+
+def test_strict_letter_relaxes_once_the_lookalike_is_known():
+    """A jittered l one row off is a question while the set knows no I; once an I cluster exists
+    and sits well apart, the variant matches l (rival-free), and a bitmap next to the I matches I."""
+    from vobsub_to_srt.recognize import near_match
+    db = GlyphDB("t")
+    gl = segment(render("l"))[0].glyphs[0]
+    for _ in range(2):
+        db.add_vote(gl.key, gl.bits, gl.top_rel, "l", "", once=set())
+    taller = np.vstack([gl.bits[:1], gl.bits])                      # one row more: jitter of the l
+    assert db.find_cluster(taller, gl.top_rel - 1, "l") is None     # no I known yet: strict
+    short = gl.bits[2:]                                              # two rows shorter: the font's I
+    for _ in range(2):
+        db.add_vote(glyph_key(short), short, gl.top_rel + 2, "I", "", once=set())
+    assert db.lookalike_known("l", gl.bits.shape[0])
+    assert db.find_cluster(taller, gl.top_rel - 1, "l") == db.canonical(gl.key)      # rival I far enough
+    near_i = short.copy(); near_i[0, 0] = not near_i[0, 0]            # one pixel off the I
+    assert db.find_cluster(near_i, gl.top_rel + 2, None) == db.canonical(glyph_key(short))
+    assert db.find_cluster(near_i, gl.top_rel + 2, "l") is None     # read as l by the model: kept apart
+
+
+def test_stray_vote_does_not_hide_an_il_cluster():
+    """The font's I/l cluster read as l 121 times, I 14 times and once as J is still the I/l pair:
+    a jittered l matches it (the word decides the letter) instead of going to the model."""
+    from collections import Counter
+    from vobsub_to_srt.recognize import voted_labels, confusable, near_match
+    assert voted_labels(Counter({"l": 121, "I": 14, "J": 1})) == {"l", "I"}
+    assert confusable(voted_labels(Counter({"l": 121, "I": 14, "J": 1})))
+    assert voted_labels(Counter({"l": 3, "J": 1})) == {"l", "J"}             # few reads: nothing is a stray
+    db = GlyphDB("t"); db.tolerant = True
+    g = segment(render("l"))[0].glyphs[0]
+    db.add_vote(g.key, g.bits, g.top_rel, "l", "", weight=121)
+    db.add_vote(g.key, g.bits, g.top_rel, "I", "", weight=14)
+    db.add_vote(g.key, g.bits, g.top_rel, "J", "", weight=1)
+    jit = g.bits.copy()
+    ys, xs = np.nonzero(jit)
+    jit[ys[0], xs[0]] = False                                             # one pixel of jitter
+    gj = Glyph(g.x, g.y, jit, g.top_rel, glyph_key(jit))
+    key, v, r = near_match(db, gj)
+    assert key == g.key and v is not None

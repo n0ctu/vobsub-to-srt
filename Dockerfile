@@ -1,6 +1,7 @@
 # vobsub-to-srt image: CLI by default, `web` as first argument starts the web app on :8000. State lives in /data (mount it): glyph-memory/, word-memory/,
-# dictionaries/, cache/, out/. The baseline glyph memory from the repo seeds /data/glyph-memory
-# on first start (see docker/entrypoint.sh).
+# dictionaries/, cache/, out/. The baseline glyph memory from the repo seeds /data/glyph-memory on
+# first start; a newer image replaces its sets there and archives the old copies under superseded/
+# (see vobsub_to_srt/seed.py).
 FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 ARG VERSION=dev

@@ -436,9 +436,29 @@ def learn_cue(db: GlyphDB, lines: list[Line], vlm_text: str, gap_threshold: floa
     aligns, reason = align_cue(db, lines, vlm_text, gap_threshold)
     if aligns is None:
         return LearnResult(False, reason)
+    # An answer that contradicts a confirmed letter is wrong somewhere, and the aligner placed its
+    # surplus or missing letters on the neighbours: nothing in such an answer is evidence. I/l
+    # disagreements are not contradictions (the font may draw them alike; the word decides).
+    conflicts = []
+    narrow: list[str] = []
+    for line, a in zip(lines, aligns):
+        gl = line.glyphs
+        for k, mp in enumerate(a.mappings):
+            if k in a.shifted:
+                continue
+            s0, s1 = mp.segs
+            if s1 - s0 == 1:
+                prev = confirmed(db.lookup(gl[s0].key, gl[s0].top_rel))
+                if prev and prev != mp.text and not ({prev, mp.text} <= AMBIG_IL):
+                    conflicts.append(f"{prev!r}->{mp.text!r}")
+                if len(mp.text) > 1 and not db.fits_width(mp.text, gl[s0].w):
+                    narrow.append(mp.text)
+    if conflicts:
+        return LearnResult(False, "contradicts confirmed glyphs: " + ", ".join(conflicts), conflicts=conflicts, alignments=aligns)
+    if narrow:
+        return LearnResult(False, "letters do not fit the glyph: " + ", ".join(repr(t) for t in narrow), alignments=aligns)
     if source is not None and not db.learn_source(source):
         return LearnResult(False, ALREADY_LEARNED, alignments=aligns)
-    conflicts = []
     seen: set[tuple] = set()      # one vote per (glyph, label) per cue: votes must be independent
     for line, a in zip(lines, aligns):
         gl = line.glyphs
@@ -448,10 +468,6 @@ def learn_cue(db: GlyphDB, lines: list[Line], vlm_text: str, gap_threshold: floa
             s0, s1 = mp.segs
             if s1 - s0 == 1:
                 g = gl[s0]
-                v = db.lookup(g.key, g.top_rel)
-                prev = confirmed(v)
-                if prev and prev != mp.text:
-                    conflicts.append(f"{prev!r}->{mp.text!r}")
                 # one vote per (cluster, label) per cue: jittered variants of one letter in one
                 # cue are not independent evidence
                 db.add_vote(g.key, g.bits, g.top_rel, mp.text, mp.style, once=seen)
@@ -477,7 +493,7 @@ def learn_cue(db: GlyphDB, lines: list[Line], vlm_text: str, gap_threshold: floa
         for keys, txt in words:
             if keys:
                 db.add_word(keys, txt)
-    return LearnResult(True, conflicts=conflicts or None, alignments=aligns)
+    return LearnResult(True, alignments=aligns)
 
 
 def geometry_spaces(db: GlyphDB, lines: list[Line], aligns: list[Alignment]) -> list[str]:

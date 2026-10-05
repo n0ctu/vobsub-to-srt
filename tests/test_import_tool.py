@@ -67,3 +67,24 @@ def test_new_update_merge_and_refusals(tmp_path):
     assert sorted(c.label for c in merged.values()) == ["a", "b", "c", "d", "e"]
     again = {p.name: p for p in mi.plans_for(pulled, repo, "0.1.0", allow_unversioned=True)}
     assert not again["shipped"].new and not again["sibling"].new and again["other"].action == "update"
+
+
+def test_server_copy_merges_as_a_delta_against_its_seed(tmp_path):
+    """A copy seeded from release 9.9.9 that read one more letter: only that letter's votes merge
+    into the current set, the seed's votes are not counted a second time."""
+    repo, pulled = tmp_path / "repo", tmp_path / "pulled"
+    repo.mkdir(); pulled.mkdir()
+    base = tmp_path / ".cache" / "bench" / "baseline-at" / "9.9.9"
+    base.mkdir(parents=True)
+    _set(base / "shipped.json", {"a": 1, "b": 2})                        # as shipped in 9.9.9
+    _set(repo / "shipped.json", {"a": 1, "b": 2, "c": 3})                # the baseline moved on
+    srv = _set(pulled / "shipped.json", {"a": 1, "b": 2})                 # the server's copy of 9.9.9 ...
+    for _ in range(2):
+        srv.add_vote("k4", _glyph(4), 0, "d", "")                        # ... learned a 'd'
+    srv.seeded_from = "9.9.9"; srv.journal = None; srv.save(final=True)
+    plan = mi.plans_for(pulled, repo, "0.1.0", allow_unversioned=False)[0]
+    assert plan.action == "delta" and plan.seed == "9.9.9" and [c.label for c in plan.new] == ["d"]
+    assert mi.apply_plan(plan, repo, force=False).startswith("shipped: delta since 9.9.9 merged (2 votes")
+    merged = GlyphDB.load(repo / "shipped.json")
+    labels = {c.label: sum(c.votes.values()) for c in mi.confirmed_clusters(merged).values()}
+    assert labels == {"a": 2, "b": 2, "c": 2, "d": 2}                    # a and b not doubled
