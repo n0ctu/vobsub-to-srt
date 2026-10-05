@@ -28,6 +28,10 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository }}
+          # only main moves `latest` (Watchtower follows it); by default a version tag build would
+          # claim it too, and pushing two tags at once let the older one win (0.2.1 over 0.2.2)
+          flavor: |
+            latest=false
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
