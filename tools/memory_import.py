@@ -292,6 +292,8 @@ def apply_plan(plan: Plan, repo: Path, force: bool) -> str:
     if plan.action in ("update", "new"):
         db = GlyphDB.load(plan.path)              # a load/save round trip normalises the file
         db.path = repo / f"{plan.name}.json"
+        if plan.action == "update" and not db.learned_with:
+            db.learned_with = GlyphDB.load(db.path).learned_with     # a copy from before the stamp keeps its lineage's
         db.journal = None                         # write this content, do not replay onto the old file
         db.dirty = True
         db.save(final=True)

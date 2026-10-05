@@ -37,7 +37,7 @@ def test_new_update_merge_and_refusals(tmp_path):
     repo.mkdir(); pulled.mkdir()
     _set(repo / "shipped.json", {"a": 1, "b": 2, "c": 3})
 
-    _set(pulled / "shipped.json", {"a": 1, "b": 2, "c": 3, "d": 4})           # grown copy of the shipped set
+    _set(pulled / "shipped.json", {"a": 1, "b": 2, "c": 3, "d": 4}, learned_with=None)   # grown copy, from before the stamp
     _set(pulled / "sibling.json", {"a": 1, "b": 2, "e": 5})                   # same font, learned under another name
     _set(pulled / "other.json", {"x": 11, "y": 12, "z": 13})                  # a different font
     _set(pulled / "old.json", {"q": 21, "r": 22}, learned_with=None)          # from before the version stamp
@@ -48,11 +48,13 @@ def test_new_update_merge_and_refusals(tmp_path):
 
     plans = {p.name: p for p in mi.plans_for(pulled, repo, "0.1.0", allow_unversioned=False)}
     assert plans["shipped"].action == "update" and [c.label for c in plans["shipped"].new] == ["d"]
-    assert not plans["shipped"].refused and not plans["shipped"].changed
+    assert plans["shipped"].refused == ["no learned_with version (learned before 0.1.0); --allow-unversioned to accept"]
+    assert not plans["shipped"].changed
     assert plans["sibling"].action == "merge" and plans["sibling"].target == "shipped"
     assert [c.label for c in plans["sibling"].new] == ["e"]
     assert plans["other"].action == "new" and len(plans["other"].new) == 3
     assert plans["old"].refused and "learned_with" in plans["old"].refused[0]
+    plans["shipped"].refused.clear()                                           # as --allow-unversioned would
     assert not mi.plans_for(pulled, repo, "0.1.0", allow_unversioned=True)[1].refused   # old.json accepted
     assert plans["wrong"].action == "merge" and plans["wrong"].changed == [("k3", "c", "o")] and plans["wrong"].refused
 
@@ -60,6 +62,7 @@ def test_new_update_merge_and_refusals(tmp_path):
     assert out["wrong"].startswith("wrong: skipped") and out["old"].startswith("old: skipped")
     assert sorted(p.stem for p in repo.glob("*.json")) == ["other", "shipped"]
     assert not list(repo.glob("*.lock"))
+    assert GlyphDB.load(repo / "shipped.json").learned_with == "0.1.0"     # an unstamped copy keeps the shipped stamp
     merged = mi.confirmed_clusters(GlyphDB.load(repo / "shipped.json"))
     assert sorted(c.label for c in merged.values()) == ["a", "b", "c", "d", "e"]
     again = {p.name: p for p in mi.plans_for(pulled, repo, "0.1.0", allow_unversioned=True)}
