@@ -215,7 +215,7 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
             # bitmap is within the strict tolerance and no cluster reading differently is nearby
             # (a g variant with no q or 9 around); never with a wider tolerance, a letter the set
             # has not learned yet may sit just beyond it (an 8 next to the only 6)
-            if r > tol or not db.rival_free(g.bits, g.top_rel, label, r):
+            if r > tol or not db.rival_free(g.bits, g.top_rel, label, r, key=g.key):
                 continue
         if r <= tol and (letters_in(label) < 2 or local_diff_ratio(g.bits, db.shapes[key].bits) <= tol):
             cands.append((r, key, v, label))      # several touching letters: the difference may not sit in one of them

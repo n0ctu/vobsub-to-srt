@@ -20,6 +20,6 @@ COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh && mkdir -p /data
 VOLUME ["/data"]
 WORKDIR /data
-ENV PATH="/app/.venv/bin:$PATH" VOBSUB_TO_SRT_DICT_DIR=/data/dictionaries
+ENV PATH="/app/.venv/bin:$PATH" VOBSUB_TO_SRT_DICT_DIR=/data/dictionaries OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["--help"]

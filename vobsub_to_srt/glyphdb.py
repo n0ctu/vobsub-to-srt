@@ -39,6 +39,8 @@ FUSED_WIDTH_SHARE = 0.7 # a multi-letter reading needs a glyph at least this wid
 STRICT_MARGIN = 0.05    # ... unless no cluster reading differently lies within this of the match (rival_free)
 LOOKALIKES = ("Il1|!iíìïîj", "035689gq")   # classes whose members a font may draw alike
 CLUSTER_MARGIN = 0.06     # lead over the nearest shape with a different label
+NEAR_CACHE_MAX = 200_000   # remembered near searches (glyph key, bound) before the memo is reset
+RIVAL_MAX = 0.3            # widest margin rival_free looks at
 TOLERANT_TOL = 0.05       # edge-tolerant difference accepted as "the same glyph, jittered" (recognize.near_match stage 2)
 TOLERANT_MARGIN = 0.03    # ... unless another label's shape is nearly as close
 PROTO_MIN = 6             # samples before a cluster's prototype is used for matching
@@ -301,7 +303,9 @@ class GlyphDB:
         # word memory for resolving ambiguous glyphs (I/l): "k1|k2|..." -> {text: votes}
         self.words: dict[str, Counter] = {}
         self.by_size: dict[tuple[int, int], list[str]] = defaultdict(list)
-        self._stacks: dict[tuple[int, int], tuple] = {}   # size bucket -> (keys, stacked bits, ink counts)
+        # size bucket -> (keys, stacked bits, ink counts), grown in place as shapes join (buckets are
+        # append-only except for pruning, which drops the bucket's stack)
+        self._stacks: dict[tuple[int, int], tuple] = {}
         self._near_cache: dict[tuple[str, float], tuple[tuple, list]] = {}   # (glyph key, tol) -> (bucket stamp, result)
         self._lookalike_cache: dict[tuple[str, int], bool] = {}            # (label, height) -> lookalike_known
         self._width_cache: dict[str, float] | None = None                  # label -> median width of its clusters
@@ -407,12 +411,7 @@ class GlyphDB:
             keys = self.by_size.get(size)
             if not keys or len(keys) <= seen[b]:
                 continue
-            st = self._stacks.get(size)
-            if st is None or len(st[0]) != len(keys):
-                flat = np.stack([self.shapes[k].bits for k in keys]).reshape(len(keys), -1).astype(np.float32)
-                st = (list(keys), flat, flat.sum(axis=1).astype(np.int64))
-                self._stacks[size] = st
-            skeys, flat, nb = st
+            skeys, flat, nb = self._stack(size, keys)
             # ink-count bound: the pixel difference is at least |ink_a - ink_b|
             reach = np.abs(nb - na) <= max_ratio * np.maximum(1.0, (na + nb) / 2)
             if seen[b]:
@@ -435,10 +434,37 @@ class GlyphDB:
                 found.extend((r, b, i, skeys[i], dh) for r, i in zip(ratios[sel].tolist(), idx[sel].tolist()))
         found.sort(key=lambda c: c[:3])
         if key is not None:
-            if len(self._near_cache) >= 20000:
+            if len(self._near_cache) >= NEAR_CACHE_MAX:
                 self._near_cache.clear()
             self._near_cache[(key, max_ratio)] = (stamp, found)
         return [(r, k, dh) for r, b, i, k, dh in found]
+
+    def _stack(self, size: tuple[int, int], keys: list[str]) -> tuple[list[str], np.ndarray, np.ndarray]:
+        """The bucket's bitmaps as rows of one float32 matrix plus their ink counts. Shapes joining
+        the bucket are appended to the existing matrix (capacity doubles), so a track that adds
+        thousands of jittered variants to the same buckets does not restack them on every join."""
+        st = self._stacks.get(size)
+        n = len(keys)
+        if st is None:
+            cap = max(16, n)
+            buf = np.zeros((cap, size[0] * size[1]), np.float32)
+            ink = np.zeros(cap, np.int64)
+            st = self._stacks[size] = [[], buf, ink]
+        skeys, buf, ink = st
+        m = len(skeys)
+        if m < n:
+            if n > len(buf):
+                cap = max(n, 2 * len(buf))
+                nbuf = np.zeros((cap, buf.shape[1]), np.float32)
+                nbuf[:m] = buf[:m]
+                nink = np.zeros(cap, np.int64)
+                nink[:m] = ink[:m]
+                st[1], st[2] = buf, ink = nbuf, nink
+            new = np.stack([self.shapes[k].bits for k in keys[m:]]).reshape(n - m, -1)
+            buf[m:n] = new
+            ink[m:n] = new.sum(axis=1)
+            skeys.extend(keys[m:])
+        return skeys, buf[:n], ink[:n]
 
     def tolerant_candidates(self, bits: np.ndarray, max_ratio: float = TOLERANT_TOL) -> list[tuple[float, str, int]]:
         """Like near_candidates, with an edge-tolerant difference: ink of one bitmap that lies within
@@ -532,15 +558,21 @@ class GlyphDB:
             self._lookalike_cache[(label, h)] = hit
         return hit
 
-    def rival_free(self, bits: np.ndarray, top_rel: int, label: str, r: float, exclude: str | None = None) -> bool:
+    def rival_free(self, bits: np.ndarray, top_rel: int, label: str, r: float, exclude: str | None = None,
+                   key: str | None = None) -> bool:
         """No cluster reading differently from `label` within STRICT_MARGIN of a match at `r`,
         in a set that knows a look-alike of the letter. Used to let a strict letter (I l 1,
         digits, g) bridge one pixel of height on a rescaled track; the strict tolerance itself
         stays, a look-alike the set has not learned yet may sit just beyond it."""
         if not self.lookalike_known(label, bits.shape[0]):
             return False
-        for r2, key, dh in self.near_candidates(bits, max_ratio=min(0.3, r + STRICT_MARGIN)):
-            shape = self.shapes[key]
+        # one search at the widest margin (remembered per glyph key), cut to this match's margin:
+        # the same candidates in the same order as a search with the narrower bound
+        reach = min(RIVAL_MAX, r + STRICT_MARGIN)
+        for r2, k2, dh in self.near_candidates(bits, max_ratio=RIVAL_MAX, key=key):
+            if r2 > reach:
+                break
+            shape = self.shapes[k2]
             if exclude is not None and shape.cluster == exclude:
                 continue
             v = self.shapes[shape.cluster].variant(top_rel, self.pos_tol)
@@ -555,8 +587,8 @@ class GlyphDB:
         Same height and the strict tolerance when the new label or the candidate's label is
         strict (I/l & co), unless no look-alike cluster exists nearby (rival_free)."""
         cands: list[tuple[float, str, str | None]] = []
-        for r, key, dh in self.near_candidates(bits, key=key):
-            shape = self.shapes[key]
+        for r, ckey, dh in self.near_candidates(bits, key=key):
+            shape = self.shapes[ckey]
             if self.shapes[shape.cluster].variant(top_rel, self.pos_tol) is None:
                 continue
             lab = self._label_of(shape, top_rel)
@@ -566,7 +598,7 @@ class GlyphDB:
                 # reading differently is nearby (never a wider tolerance, see near_match)
                 want = lab or label
                 if r > tol or want is None or (label and lab and label != lab) \
-                        or not self.rival_free(bits, top_rel, want, r, exclude=shape.cluster):
+                        or not self.rival_free(bits, top_rel, want, r, exclude=shape.cluster, key=key):
                     continue
             if r <= tol and (letters_in(label, lab) < 2 or local_diff_ratio(bits, shape.bits) <= tol):
                 cands.append((r, shape.cluster, lab))
@@ -590,7 +622,6 @@ class GlyphDB:
             shape = Shape(key, bits.copy(), derived_from=derived_from or canon, cluster=canon or key)
             self.shapes[key] = shape
             self.by_size[bits.shape].append(key)
-            self._stacks.pop(bits.shape, None)
             self._tstacks.pop(bits.shape, None)
             self._soft.clear()
             self.dirty = True
@@ -618,7 +649,6 @@ class GlyphDB:
         canon = self.canonical(canonical_key)
         self.shapes[key] = Shape(key, bits.copy(), derived_from=canonical_key, cluster=canon)
         self.by_size[bits.shape].append(key)
-        self._stacks.pop(bits.shape, None)
         self._tstacks.pop(bits.shape, None)
         self._soft.clear()
         self.dirty = True
@@ -667,7 +697,7 @@ class GlyphDB:
             return shape.cluster
         hit = self._soft.get(key)
         if hit is None:
-            hit = self._soft[key] = self.find_cluster(bits, top_rel) or key
+            hit = self._soft[key] = self.find_cluster(bits, top_rel, key=key) or key
         return hit
 
     def _is_seq_part(self, bits: np.ndarray) -> bool:
@@ -1165,6 +1195,7 @@ class GlyphDB:
             self._tstacks.pop(sh.bits.shape, None)
         if drop:
             self._soft.clear()
+            self._near_cache.clear()        # results may name dropped shapes; stamps are bucket lengths
             self.dirty = True
         return len(drop)
 

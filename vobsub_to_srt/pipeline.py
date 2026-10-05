@@ -160,11 +160,9 @@ def probe(db_dir: Path, keyfreq: Counter, glyphs: dict, min_cov: float,
     3) otherwise a fresh DB. `progress(stage, step, total)` is called before each set is tried."""
     total = sum(keyfreq.values()) or 1
     dbs: list[GlyphDB] = []
-    best, best_cov = None, 0.0
+    exacts: list[float] = []
     paths = sorted(db_dir.glob("*.json")) if db_dir.is_dir() else []
-    for i, p in enumerate(paths):
-        if progress:
-            progress("compare", i + 1, len(paths))
+    for p in paths:
         try:
             db = GlyphDB.load(p)
         except Exception as e:  # corrupt DB should not stop the run
@@ -173,15 +171,42 @@ def probe(db_dir: Path, keyfreq: Counter, glyphs: dict, min_cov: float,
         if db.charset != charset:
             continue          # simplified and literal labels must never mix
         dbs.append(db)
-        exact = sum(n for key, n in keyfreq.items() if key in db.shapes) / total
-        cov = exact
+        exacts.append(sum(n for key, n in keyfreq.items() if key in db.shapes) / total)
+    # Coverage = exact bitmaps + near matches. The near pass is the expensive part (one search per
+    # distinct bitmap and set), so the sets are visited by exact coverage, best first, and a set's
+    # pass stops once even matching every remaining glyph could neither reach min_cov nor beat the
+    # best set so far (ties go to the earlier file, as in a visit in file order). Bitmaps are tried
+    # most frequent first, which shrinks that bound fastest. The chosen set is the same as with a
+    # full pass over every set.
+    by_freq = sorted(keyfreq.items(), key=lambda kv: -kv[1])
+    best_i, best_cov = -1, 0.0
+    for step, i in enumerate(sorted(range(len(dbs)), key=lambda i: -exacts[i])):
+        if progress:
+            progress("compare", step + 1, len(dbs))
+        db, exact = dbs[i], exacts[i]
+        cov, stopped = exact, False
         if exact < min_cov:
-            near = sum(n for key, n in keyfreq.items()
-                       if key not in db.shapes and near_match(db, glyphs[key])[1] is not None) / total
-            cov = exact + near
-        log.info("probe: %s covers %.1f%% of glyph occurrences (%.1f%% exact)", p.name, 100 * cov, 100 * exact)
-        if cov > best_cov:
-            best, best_cov = db, cov
+            rest = [(key, n) for key, n in by_freq if key not in db.shapes]
+            remaining = sum(n for _, n in rest)
+            near = 0
+            for j, (key, n) in enumerate(rest):
+                if j % 32 == 0:
+                    bound = exact + (near + remaining) / total
+                    if bound < min_cov or bound < best_cov or (bound == best_cov and i > best_i):
+                        stopped = True
+                        break
+                if near_match(db, glyphs[key])[1] is not None:
+                    near += n
+                remaining -= n
+            cov = exact + near / total
+        if stopped:
+            log.info("probe: %s covers less than %.1f%% of glyph occurrences (%.1f%% exact)",
+                     db.path.name, 100 * max(min_cov, best_cov), 100 * exact)
+            continue
+        log.info("probe: %s covers %.1f%% of glyph occurrences (%.1f%% exact)", db.path.name, 100 * cov, 100 * exact)
+        if cov > best_cov or (cov == best_cov and best_i >= 0 and i < best_i):
+            best_i, best_cov = i, cov
+    best = dbs[best_i] if best_i >= 0 else None
     if best is not None and best_cov >= min_cov:
         return best, best_cov, "exact"
     name = random_db_name(db_dir)          # neutral name: DBs can be shared without revealing sources

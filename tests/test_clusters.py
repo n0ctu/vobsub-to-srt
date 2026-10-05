@@ -319,3 +319,80 @@ def test_stray_vote_does_not_hide_an_il_cluster():
     gj = Glyph(g.x, g.y, jit, g.top_rel, glyph_key(jit))
     key, v, r = near_match(db, gj)
     assert key == g.key and v is not None
+
+
+def _jitter_db(n_letters: str = "aeoscn", copies: int = 6):
+    """A set holding several jittered variants of each letter, joined in a fixed order."""
+    db = GlyphDB("j")
+    glyphs = segment(render(n_letters))[0].glyphs
+    order = []
+    for k in range(copies):
+        for g, ch in zip(glyphs, n_letters):
+            b = _jitter(g.bits, 100 * k + ord(ch)) if k else g.bits
+            order.append((glyph_key(b), b, g.top_rel, ch))
+    return db, order, glyphs
+
+
+def test_remembered_near_search_equals_a_fresh_search():
+    """The near search remembers results per glyph key and compares only newcomers when a size
+    bucket grows; the bucket's bitmap matrix grows in place. After joins and after pruning the
+    answer must equal that of a set built from scratch, for every bound (rival_free cuts one
+    search at its widest margin)."""
+    db, order, glyphs = _jitter_db()
+    queries = [(_jitter(g.bits, 7000 + i), g.top_rel) for i, g in enumerate(glyphs)]
+
+    def fresh(upto):
+        f = GlyphDB("f")
+        for key, b, top, ch in order[:upto]:
+            f.add_vote(key, b, top, ch, "")
+        return f
+
+    for upto in (len(order) // 3, 2 * len(order) // 3, len(order)):
+        for key, b, top, ch in order[:upto]:
+            if key not in db.shapes:
+                db.add_vote(key, b, top, ch, "")
+        ref = fresh(upto)
+        for q, top in queries:
+            qk = glyph_key(q)
+            for bound in (0.12, 0.3):
+                assert db.near_candidates(q, bound, key=qk) == ref.near_candidates(q, bound)
+            wide = db.near_candidates(q, 0.3, key=qk)
+            for bound in (0.05, 0.1, 0.17, 0.25):
+                assert [c for c in wide if c[0] <= bound] == ref.near_candidates(q, bound)
+    # pruning drops cluster members from the buckets: remembered results must not survive it
+    for s in db.shapes.values():
+        s.n = 0
+    assert db.prune_members() > 0
+    ref = GlyphDB("r")
+    for key, b, top, ch in order:
+        if key in db.shapes:
+            ref.add_vote(key, b, top, ch, "")
+    for q, top in queries:
+        assert db.near_candidates(q, 0.12, key=glyph_key(q)) == ref.near_candidates(q, 0.12)
+
+
+def test_probe_stops_hopeless_sets_but_picks_the_same_set(tmp_path):
+    """The near pass of a set stops once it can no longer win; ties still go to the earlier file."""
+    from collections import Counter
+    from vobsub_to_srt.pipeline import probe
+    letters = "aeoscnrt"
+    glyphs = segment(render(letters))[0].glyphs
+    for name in ("b-same", "c-same"):                    # the font, twice: the earlier file wins
+        db = GlyphDB(name, tmp_path / f"{name}.json")
+        for g, ch in zip(glyphs, letters):
+            for k in range(2):
+                b = _jitter(g.bits, 50 * k + ord(ch))
+                db.add_vote(glyph_key(b), b, g.top_rel, ch, "")
+        db.save()
+    other = GlyphDB("a-other", tmp_path / "a-other.json")   # another font: first in file order
+    for g, ch in zip(segment(render("XYZW"))[0].glyphs, "XYZW"):
+        other.add_vote(g.key, g.bits, g.top_rel, ch, ""); other.add_vote(g.key, g.bits, g.top_rel, ch, "")
+    other.save()
+    keyfreq, sample = Counter(), {}
+    for i, g in enumerate(glyphs):                         # the file: jittered, no exact bitmap
+        b = _jitter(g.bits, 9000 + i)
+        k = glyph_key(b)
+        keyfreq[k] += 5
+        sample[k] = Glyph(0, 0, b, g.top_rel, k)
+    db, cov, mode = probe(tmp_path, keyfreq, sample, 0.5)
+    assert mode == "exact" and db.name == "b-same" and cov > 0.5
