@@ -1,6 +1,6 @@
 [project]
 name = "vobsub-to-srt"
-version = "0.2.2"
+version = "0.3.0"
 description = "VobSub (.idx/.sub) to SRT: self-learning glyph OCR with a vision LLM as teacher"
 readme = "README.md"
 license = "MIT"
