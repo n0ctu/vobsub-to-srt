@@ -154,7 +154,8 @@ def image_id(mask: np.ndarray) -> str:
 
 
 def probe(db_dir: Path, keyfreq: Counter, glyphs: dict, min_cov: float,
-          charset: str = CHARSET_SIMPLIFIED, progress=None) -> tuple[GlyphDB, float, str]:
+          charset: str = CHARSET_SIMPLIFIED, progress=None,
+          private_dir: Path | None = None) -> tuple[GlyphDB, float, str]:
     """1) exact bitmap coverage of existing DBs (same font + raster);
     2) otherwise a DB of the same font at another raster size as teacher (scaled transfer);
     3) otherwise a fresh DB. `progress(stage, step, total)` is called before each set is tried."""
@@ -170,6 +171,8 @@ def probe(db_dir: Path, keyfreq: Counter, glyphs: dict, min_cov: float,
             continue
         if db.charset != charset:
             continue          # simplified and literal labels must never mix
+        if private_dir is not None:
+            db.load_interim(private_dir)   # glyphs read once count too: a font seen in one short file
         dbs.append(db)
         exacts.append(sum(n for key, n in keyfreq.items() if key in db.shapes) / total)
     # Coverage = exact bitmaps + near matches. The near pass is the expensive part (one search per
@@ -340,7 +343,8 @@ async def process_file(source: Path | VobSubData, client: VLMClient | None, opts
 
     emit("decoded", glyphs=sum(keyfreq.values()), shapes=len(keyfreq), seconds=round(time.time() - t0, 1))
     db, cov, probe_mode = probe(opts.db_dir, keyfreq, sample_glyph, opts.min_probe_coverage, charset,
-                                progress=lambda stage, i, n: emit("probe_step", stage=stage, step=i, total=n))
+                                progress=lambda stage, i, n: emit("probe_step", stage=stage, step=i, total=n),
+                                private_dir=opts.private_dir)
     log.info("using DB %s (%s, coverage %.1f%%)", db.path.name if db.path else db.name, probe_mode, 100 * cov)
     emit("probe", db=db.name, mode=probe_mode, coverage=round(cov, 4))
     flush_glyphs()

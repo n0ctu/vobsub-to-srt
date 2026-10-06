@@ -261,7 +261,9 @@ def glyph_inventory(name: str) -> dict | None:
         return hit[1]
     from .glyphdb import GlyphDB
     from .pipeline import glyph_inventory as inventory
-    value = inventory(GlyphDB.load(path))
+    db = GlyphDB.load(path)
+    db.load_interim(DATA / "word-memory")       # this server's glyphs read once (not published)
+    value = inventory(db)
     value["updated"] = int(path.stat().st_mtime)
     if len(_inventory_cache) >= 8:                 # a handful of recently viewed sets
         _inventory_cache.pop(next(iter(_inventory_cache)))

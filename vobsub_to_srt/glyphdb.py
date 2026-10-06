@@ -159,6 +159,9 @@ class Variant:
     # label transferred from a teacher DB at another raster size: usable while no VLM read
     # contradicts it, counts as one vote otherwise, never overrides the VLM
     prior: str | None = None
+    # loaded from a main file written by 0.3.0 or later: it was settled when that file was saved
+    # and stays in the main file (a later dissenting read must not push a confirmed glyph out)
+    kept: bool = field(default=False, compare=False)
 
     def style(self) -> str:
         """Glyph style from geometry (word slant, stroke width); VLM tags only break ties.
@@ -347,6 +350,11 @@ class GlyphDB:
         self._pstacks: dict | None = None        # canvas size -> (keys, medians, masks), rebuilt lazily
         self._counts_credited: set[str] = set()
         self.saved_this_run = False           # a final save (with pruning) follows any mid-run save
+        # Interim learning: glyph positions read but not settled yet (one read, or reads that
+        # disagree) live in the private sidecar, not in the main file, so shipped and published sets
+        # hold settled glyphs only. In memory both are one set; save() splits them (see _split).
+        self._kept_seqs: set[str] = set()     # sequences loaded from a 0.3.0+ main file
+        self._interim_from: Path | None = None   # sidecar whose interim part is merged in
 
     @property
     def pos_tol(self) -> int:
@@ -941,10 +949,75 @@ class GlyphDB:
         return {k: float(np.median(v)) for k, v in acc.items()}
 
     # ---------- persistence ----------
-    def to_json(self) -> dict:
+    def _settled(self, v: Variant, key: str, main_parts: set[str]) -> bool:
+        """Does this glyph position belong in the main file? Confirmed (trusted_label), a teacher's
+        label, the font's I/l pair read at least twice (the word decides the letter), a part of a
+        settled sequence (parts carry no votes), or kept from a 0.3.0+ main file."""
+        if v.kept or v.prior:
+            return True
+        votes = +v.votes
+        if not votes:
+            return key in main_parts
+        if trusted_label(votes)[0] is not None:
+            return True
+        from .recognize import confusable, voted_labels
+        return sum(votes.values()) >= MIN_VOTES and confusable(voted_labels(votes))
+
+    @staticmethod
+    def _seq_parts(keys) -> set[str]:
+        return {part for k in keys for part in k.rstrip("'^").split("|")}
+
+    def _split(self) -> tuple[list, list, dict, dict]:
+        """(main shapes, interim shapes, main sequences, interim sequences) as JSON records. A shape
+        whose cluster has settled and unsettled positions appears in both, each with its own
+        variants; jitter members go where their cluster's settled positions are (else interim)."""
+        main_seqs, interim_seqs = {}, {}
+        for k, v in self.sequences.items():
+            settled = k in self._kept_seqs or trusted_label(v)[0] is not None
+            (main_seqs if settled else interim_seqs)[k] = dict(v)
+        main_parts = self._seq_parts(main_seqs)
+        split: dict[str, tuple[list, list]] = {}
+        for sh in self.shapes.values():
+            if sh.variants:
+                mv = [v for v in sh.variants if self._settled(v, sh.key, main_parts)]
+                split[sh.key] = (mv, [v for v in sh.variants if not any(v is m for m in mv)])
+        main_clusters = {k for k, (mv, _) in split.items() if mv} | (main_parts & self.shapes.keys())
+        main, interim = [], []
+        for sh in self.shapes.values():
+            if sh.key in split:
+                mv, iv = split[sh.key]
+                if mv or sh.key in main_clusters:
+                    main.append(self._shape_json(sh, mv, proto=True))
+                    if iv:
+                        interim.append(self._shape_json(sh, iv, proto=False))
+                else:
+                    interim.append(self._shape_json(sh, iv, proto=True))
+            elif sh.cluster in main_clusters:
+                main.append(self._shape_json(sh, [], proto=True))
+            else:
+                interim.append(self._shape_json(sh, [], proto=True))
+        return main, interim, main_seqs, interim_seqs
+
+    def _shape_json(self, s: "Shape", variants: list[Variant], proto: bool) -> dict:
+        return {
+            "key": s.key, "h": int(s.bits.shape[0]), "w": int(s.bits.shape[1]),
+            "bits": base64.b64encode(np.packbits(s.bits).tobytes()).decode(),
+            "derived_from": s.derived_from,
+            "cluster": s.cluster if s.cluster != s.key else None,
+            "n": s.n,
+            "proto": _proto_json(self.protos.get(s.key)) if proto and s.key in self.protos else None,
+            "variants": [{"top_rel": v.top_rel, "votes": dict(v.votes), "styles": v.styles,
+                          "geo_italic": v.geo_italic, "geo_bold": v.geo_bold, "prior": v.prior}
+                         for v in variants],
+        }
+
+    def to_json(self, parts: tuple | None = None) -> dict:
+        """The main file: settled glyphs only (publishable). The interim part is interim_json()."""
+        main, _, main_seqs, _ = parts or self._split()
         return {
             "name": self.name,
             "version": 2,
+            "layout": 3,               # main file holds settled glyphs only; interim learning is private
             "learned_with": self.learned_with,
             "saved_with": app_version(),
             "merged_from": self.merged_from,
@@ -952,21 +1025,71 @@ class GlyphDB:
             "charset": self.charset,
             "unit": self.unit,
             "parent": self.parent,
-            "shapes": [{
-                "key": s.key, "h": int(s.bits.shape[0]), "w": int(s.bits.shape[1]),
-                "bits": base64.b64encode(np.packbits(s.bits).tobytes()).decode(),
-                "derived_from": s.derived_from,
-                "cluster": s.cluster if s.cluster != s.key else None,
-                "n": s.n,
-                "proto": _proto_json(self.protos.get(s.key)) if s.key in self.protos else None,
-                "variants": [{"top_rel": v.top_rel, "votes": dict(v.votes), "styles": v.styles,
-                              "geo_italic": v.geo_italic, "geo_bold": v.geo_bold, "prior": v.prior}
-                             for v in s.variants],
-            } for s in self.shapes.values()],
-            "sequences": {k: dict(v) for k, v in self.sequences.items()},
+            "shapes": main,
+            "sequences": main_seqs,
             "gaps": {it: {str(g): c for g, c in d.items()} for it, d in self.gaps.items()},
             "pair_gaps": dict(self.pair_gaps),
         }
+
+    def interim_json(self, parts: tuple | None = None) -> dict:
+        _, interim, _, interim_seqs = parts or self._split()
+        return {"shapes": interim, "sequences": interim_seqs}
+
+    def merge_interim(self, d: dict) -> None:
+        """Add a sidecar's interim part to this set: shapes it does not hold are created, the votes
+        of a position join the cluster the bitmap belongs to here. Exact positions only: the split
+        never separates a position from itself, and nearby positions are distinct variants."""
+        recs = sorted(d.get("shapes", []), key=lambda r: r.get("cluster") is not None)   # canonical first
+        for r in recs:
+            key = r["key"]
+            sh = self.shapes.get(key)
+            if sh is None:
+                bits = _unpack(r["bits"], r["h"], r["w"])
+                cl = r.get("cluster") or key
+                sh = Shape(key, bits, derived_from=r.get("derived_from"),
+                           cluster=cl if cl in self.shapes else key, n=int(r.get("n", 1)))
+                self.shapes[key] = sh
+                self.by_size[bits.shape].append(key)
+                pj = r.get("proto")
+                if pj and key not in self.protos:
+                    self.protos[key] = Proto(n=int(pj["n"]), median=_unpack(pj["median"], pj["h"], pj["w"]),
+                                             stable=_unpack(pj["stable"], pj["h"], pj["w"]))
+            canon = self.shapes[sh.cluster]
+            for v in r["variants"]:
+                tv = canon.variant(v["top_rel"], 0)
+                if tv is None:
+                    canon.variants.append(Variant(v["top_rel"], Counter(v["votes"]), v.get("styles", {}),
+                                                  list(v.get("geo_italic", [0, 0])), list(v.get("geo_bold", [0, 0])),
+                                                  v.get("prior")))
+                    continue
+                tv.votes.update(v["votes"])
+                for f, (no, yes) in (v.get("styles") or {}).items():
+                    st = tv.styles.setdefault(f, [0, 0])
+                    st[0] += no
+                    st[1] += yes
+                for mine, theirs in ((tv.geo_italic, v.get("geo_italic", [0, 0])), (tv.geo_bold, v.get("geo_bold", [0, 0]))):
+                    mine[0] += theirs[0]
+                    mine[1] += theirs[1]
+                tv.prior = tv.prior or v.get("prior")
+        for k, v in d.get("sequences", {}).items():
+            self.sequences.setdefault(k, Counter()).update(v)
+        self._stacks.clear(); self._tstacks.clear(); self._soft.clear(); self._near_cache.clear()
+        self._pstacks = None
+        self._width_cache = None
+        self._lookalike_cache.clear()
+        self._il_cache = (-1, False)
+        self._seq_n = -1
+        self._seq_part_cache = None
+
+    def load_interim(self, private_dir: Path) -> None:
+        """Merge the interim part of <private_dir>/<name>.json (once per set and sidecar)."""
+        path = private_dir / f"{self.path.stem if self.path else self.name}.json"
+        if self._interim_from == path or not path.exists():
+            return
+        d = json.loads(path.read_text(encoding="utf-8"))
+        if d.get("interim"):
+            self.merge_interim(d["interim"])
+        self._interim_from = path
 
     @classmethod
     def load(cls, path: Path) -> "GlyphDB":
@@ -978,6 +1101,7 @@ class GlyphDB:
         db.merged_from = list(d.get("merged_from") or [])
         db.seeded_from = d.get("seeded_from")
         db.charset = d.get("charset", "literal")     # DBs from before simplification are literal
+        layout = int(d.get("layout", 0))             # 3: settled glyphs only (0.3.0+); older files hold everything
         db.learned_sources = set(d.get("learned_sources", []))      # legacy inline
         for s in d["shapes"]:
             h, w = s["h"], s["w"]
@@ -987,7 +1111,7 @@ class GlyphDB:
             for v in s["variants"]:
                 shape.variants.append(Variant(v["top_rel"], Counter(v["votes"]), v.get("styles", {}),
                                               v.get("geo_italic", [0, 0]), v.get("geo_bold", [0, 0]),
-                                              v.get("prior")))
+                                              v.get("prior"), kept=layout >= 3))
             db.shapes[shape.key] = shape
             db.by_size[bits.shape].append(shape.key)
             pj = s.get("proto")
@@ -998,6 +1122,8 @@ class GlyphDB:
             if shape.cluster not in db.shapes:
                 shape.cluster = shape.key
         db.sequences = {k: Counter(v) for k, v in d.get("sequences", {}).items()}
+        if layout >= 3:
+            db._kept_seqs = set(db.sequences)
         for it, gd in d.get("gaps", {}).items():
             for g, c in gd.items():
                 db.gaps[it][int(g)] = list(c)
@@ -1014,6 +1140,9 @@ class GlyphDB:
         self.word_memory = word_memory
         if self.private_path.exists():
             d = json.loads(self.private_path.read_text(encoding="utf-8"))
+            if d.get("interim") and self._interim_from != self.private_path:
+                self.merge_interim(d["interim"])
+            self._interim_from = self.private_path
             self.learned_sources |= set(d.get("learned_sources", []))
             for k, v in d.get("words", {}).items():
                 self.words.setdefault(k, Counter()).update(v)
@@ -1245,12 +1374,14 @@ class GlyphDB:
         self.update_unit()
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.to_json(), ensure_ascii=False), encoding="utf-8")
+        parts = self._split()
+        tmp.write_text(json.dumps(self.to_json(parts), ensure_ascii=False), encoding="utf-8")
         os.replace(tmp, path)
         self.path = path
         if self.private_path is not None:
             self.private_path.parent.mkdir(parents=True, exist_ok=True)
             priv = {"db": self.name, "learned_sources": sorted(self.learned_sources),
+                    "interim": self.interim_json(parts),
                     "protos": {k: {"h": p.acc.shape[0], "w": p.acc.shape[1], "n": p.n,
                                    "acc": base64.b64encode(np.minimum(p.acc, 65535).astype(np.uint16).tobytes()).decode()}
                                for k, p in self.protos.items() if p.acc is not None and k in self.shapes}}

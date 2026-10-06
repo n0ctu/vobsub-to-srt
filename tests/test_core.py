@@ -527,6 +527,7 @@ def test_jitter_members_are_pruned_on_save(tmp_path):
     """Members seen once are dropped on save, frequent ones kept (capped), canonicals and votes untouched."""
     from vobsub_to_srt.glyphdb import GlyphDB, MAX_MEMBERS
     db = GlyphDB("t", tmp_path / "t.json")
+    db.attach_private(tmp_path / "private", False)     # one read: the glyphs live in the interim part
     lines = segment(render("abc"))
     learn_cue(db, lines, "abc", 12, source="img1")
     a = lines[0].glyphs[0]
@@ -545,6 +546,7 @@ def test_jitter_members_are_pruned_on_save(tmp_path):
     assert canon in keys and all(f"jit{k}" in keys for k in range(3))
     assert not any(f"jit{k}" in keys for k in range(3, 30))
     reloaded = GlyphDB.load(tmp_path / "t.json")
+    reloaded.attach_private(tmp_path / "private", False)
     assert set(reloaded.shapes) == keys and reloaded.shapes["jit0"].n == 5
     assert sum(1 for s in reloaded.shapes.values() if s.cluster == canon and s.key != canon) <= MAX_MEMBERS
 

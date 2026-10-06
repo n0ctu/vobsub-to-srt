@@ -156,13 +156,14 @@ def test_glyph_inventory(client):
     assert client.get("/api/glyphs").json() == {"sets": []}
     gm = web.DATA / "glyph-memory"; gm.mkdir()
     db = GlyphDB("quiet-heron-1a2b", gm / "quiet-heron-1a2b.json")
+    db.attach_private(web.DATA / "word-memory", False)    # as a job does: the single read stays private
     bits = np.ones((5, 3), bool)
     for _ in range(2):                                   # two reads confirm a label
         db.add_vote("k-H", bits, 0, "H", "i")
     db.add_vote("k-x", np.ones((3, 3), bool), 2, "x", "")   # one read: unconfirmed
     db.save()
     sets = client.get("/api/glyphs").json()["sets"]
-    assert len(sets) == 1 and sets[0]["name"] == "quiet-heron-1a2b" and sets[0]["shapes"] == 2 and sets[0]["clusters"] == 2
+    assert len(sets) == 1 and sets[0]["name"] == "quiet-heron-1a2b" and sets[0]["shapes"] == 1 and sets[0]["clusters"] == 1   # published: settled glyphs
     inv = client.get("/api/glyphs/quiet-heron-1a2b").json()
     assert inv["shapes"] == 2 and inv["unconfirmed"] == 1 and [g["label"] for g in inv["items"]] == ["H"]
     g = inv["items"][0]
