@@ -23,7 +23,7 @@ RESCALED_ONCE_SHARE = 0.5   # share of glyph bitmaps occurring once above which 
 from .lexicon import guess_language, make_lexicon
 from .names import random_db_name
 from .simplify import CHARSET_LITERAL, CHARSET_SIMPLIFIED, simplify
-from .recognize import CueResult, near_match, recognize, _decide
+from .recognize import CueResult, confusable, near_match, recognize, voted_labels, _decide
 from .segment import Line, bold_votes, fill_mask, fill_mask_ex, italic_votes, segment, fill_values
 from .srt import fmt_ts, normalize_text, render_srt
 from .vlm import VLMClient, mask_to_png, render_cue_png, sheet_png, split_sheet
@@ -175,40 +175,60 @@ def probe(db_dir: Path, keyfreq: Counter, glyphs: dict, min_cov: float,
             db.load_interim(private_dir)   # glyphs read once count too: a font seen in one short file
         dbs.append(db)
         exacts.append(sum(n for key, n in keyfreq.items() if key in db.shapes) / total)
-    # Coverage = exact bitmaps + near matches. The near pass is the expensive part (one search per
-    # distinct bitmap and set), so the sets are visited by exact coverage, best first, and a set's
-    # pass stops once even matching every remaining glyph could neither reach min_cov nor beat the
-    # best set so far (ties go to the earlier file, as in a visit in file order). Bitmaps are tried
-    # most frequent first, which shrinks that bound fastest. The chosen set is the same as with a
-    # full pass over every set.
+    # Coverage = glyph occurrences matching a stored shape (exact bitmap or near match), for every
+    # set: a set whose exact share alone passes min_cov still competes with its full coverage (two
+    # sets of one font: learning lifted one from 46% to 52.6% exact, its near pass was skipped, and
+    # the sibling won with 62% exact against 98% total). Near matches use the pixel stages only,
+    # never the edge-tolerant one: that stage is for a set already known to be the font, and in
+    # the probe it let a foreign set pass min_cov on a rescaled track (12 Monkeys read in another
+    # font: "Praviously", "fathar"). Ties go to the set that can read more of them (a settled
+    # label or the font's I/l pair), then to the larger exact share, then to the earlier file.
+    # The near pass is the expensive part (one search per distinct bitmap and set), so the sets are
+    # visited by exact share, best first, and a set's pass stops once it can neither reach min_cov
+    # nor the best coverage so far. Bitmaps are tried most frequent first, which shrinks that
+    # bound fastest.
+    def readable(db: GlyphDB, v) -> bool:
+        if v is None:
+            return False
+        return _decide(v, db)[0] is not None or confusable(voted_labels(v.votes) | ({"I", "l"} if db.il_identical else set()))
+
     by_freq = sorted(keyfreq.items(), key=lambda kv: -kv[1])
-    best_i, best_cov = -1, 0.0
+    best_i, best_key = -1, None
+    best_cov = 0.0
     for step, i in enumerate(sorted(range(len(dbs)), key=lambda i: -exacts[i])):
         if progress:
             progress("compare", step + 1, len(dbs))
         db, exact = dbs[i], exacts[i]
-        cov, stopped = exact, False
-        if exact < min_cov:
-            rest = [(key, n) for key, n in by_freq if key not in db.shapes]
-            remaining = sum(n for _, n in rest)
-            near = 0
-            for j, (key, n) in enumerate(rest):
-                if j % 32 == 0:
-                    bound = exact + (near + remaining) / total
-                    if bound < min_cov or bound < best_cov or (bound == best_cov and i > best_i):
-                        stopped = True
-                        break
-                if near_match(db, glyphs[key])[1] is not None:
-                    near += n
-                remaining -= n
-            cov = exact + near / total
+        rest = [(key, n) for key, n in by_freq if key not in db.shapes]
+        remaining = sum(n for _, n in rest)
+        near = near_read = 0
+        stopped = False
+        for j, (key, n) in enumerate(rest):
+            if j % 32 == 0:
+                bound = exact + (near + remaining) / total
+                if bound < min_cov or (best_key is not None and bound < best_key[0]):
+                    stopped = True
+                    break
+            v = near_match(db, glyphs[key])[1]
+            if v is not None:
+                near += n
+                if readable(db, v):
+                    near_read += n
+            remaining -= n
         if stopped:
             log.info("probe: %s covers less than %.1f%% of glyph occurrences (%.1f%% exact)",
                      db.path.name, 100 * max(min_cov, best_cov), 100 * exact)
             continue
-        log.info("probe: %s covers %.1f%% of glyph occurrences (%.1f%% exact)", db.path.name, 100 * cov, 100 * exact)
-        if cov > best_cov or (cov == best_cov and best_i >= 0 and i < best_i):
-            best_i, best_cov = i, cov
+        cov = exact + near / total
+        read_n = sum(n for key, n in by_freq if key in db.shapes and readable(db, db.lookup(key, glyphs[key].top_rel)))
+        read = (read_n + near_read) / total
+        log.info("probe: %s covers %.1f%% of glyph occurrences (%.1f%% exact, %.1f%% readable)",
+                 db.path.name, 100 * cov, 100 * exact, 100 * read)
+        key_i = (cov, read, exact, -i)
+        if cov >= min_cov and (best_key is None or key_i > best_key):
+            best_i, best_key, best_cov = i, key_i, cov
+        elif best_key is None and cov > best_cov:
+            best_cov = cov          # nothing qualifies yet: remember the best coverage for the log
     best = dbs[best_i] if best_i >= 0 else None
     if best is not None and best_cov >= min_cov:
         return best, best_cov, "exact"

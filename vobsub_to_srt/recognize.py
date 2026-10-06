@@ -11,7 +11,7 @@ import re as _re
 
 from .glyphdb import (CLUSTER_TOL, MIN_VOTES, letters_in, local_diff_ratio, OVERRIDE_SHARE, OVERRIDE_VOTES, PROTO_MARGIN, PROTO_MIN_PX, PROTO_STRICT_TOL, PROTO_TOL, TOLERANT_MARGIN,
                       GlyphDB, Variant, diff_ratio, is_strict, tol_for, topology, trusted_label)
-from .styling import inherit_punct_styles, majority_style, render_styled
+from .styling import inherit_punct_styles, majority_style, render_styled, word_style
 from .segment import Glyph, Line
 
 T_ACCEPT = CLUSTER_TOL   # max pixel-diff ratio for a near match
@@ -124,7 +124,7 @@ def render_line(l: LineResult, placeholder: str = "\ufffd") -> str:
             words.append([])
         words[-1].append(it)
     texts = ["".join(it.text if it.text is not None else placeholder for it in w) for w in words]
-    wstyles = inherit_punct_styles([(txt, majority_style([it.style for it in w for _ in (it.text or "x")]))
+    wstyles = inherit_punct_styles([(txt, word_style([(c, it.style) for it in w for c in (it.text or "x")]))
                                     for txt, w in zip(texts, words)])
     chars: list[tuple[str, str]] = []
     for k, (txt, st) in enumerate(zip(texts, wstyles)):
@@ -196,6 +196,9 @@ def _has_slant(label: str | None) -> bool:
 
 STRICT_TOLERANT_TOL = 0.02   # edge-tolerant difference at which a strict letter is read in stage 2
 SAME_HEIGHT = set("Il|i1!jíìïî")   # letters whose look-alikes may differ by one pixel row
+# strict letters without a look-alike of the same extent: j is the only letter of its class (I l 1 | ! i
+# and accented i) reaching below the baseline, so no learned look-alike is needed before reading one
+OWN_EXTENT = {"j"}
 
 
 def _geo_disagree(file_votes: list | None, cluster_votes: list) -> bool:
@@ -315,7 +318,11 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
                 rival = next((c for c in every if c[3] != label and (c[3] is not None or
                               {k for k, n in c[2].votes.items() if n > 0} - {label})), None)
                 if (r > STRICT_TOLERANT_TOL or rival is not None or (dh and set(label) & SAME_HEIGHT)
-                        or not db.lookalike_known(label, g.h)):
+                        or not (label in OWN_EXTENT or db.lookalike_known(label, g.h))):
+                    return None, None, r
+                # at this size an italic 6 is edge-identical to the upright one: the glyph's own word
+                # slant must be measured and agree, or "Deck 6." loses its italics
+                if _has_slant(label) and (fi is None or _geo_disagree(fi, v.geo_italic)):
                     return None, None, r
             # one pixel of tolerance hides a slant (an italic 0 matched the upright 0 cluster at
             # 0.02): slant and weight must agree with the glyph's word geometry, whatever its size.
@@ -409,11 +416,18 @@ def recognize_line(db: GlyphDB, line: Line, learn_near: bool = True, lexicon=Non
         ital = "i" in items[len(spaces)].style or "i" in items[len(spaces) + 1].style
         spaces.append(db.classify_gap(ga.key, gb.key, gap, ital))
 
-    # two adjacent apostrophes without a space are a double quote
+    # two adjacent apostrophes without a space are a double quote; two commas are the low quote
+    # (German „), whose two parts the stored sequence missed when they jittered ("- ,,Die erste")
+    low_quote = "„" if db.charset == "literal" else '"'
     k = 0
     while k + 1 < len(items):
+        pair = None
         if items[k].text in ("'", "’") and items[k + 1].text in ("'", "’") and spaces[k] is False:
-            items[k] = GlyphResult('"', items[k].style, via="seq")
+            pair = '"'
+        elif items[k].text == "," and items[k + 1].text == "," and spaces[k] is False:
+            pair = low_quote
+        if pair is not None:
+            items[k] = GlyphResult(pair, items[k].style, via="seq")
             spans[k] = (spans[k][0], spans[k + 1][1])
             del items[k + 1], spans[k + 1], spaces[k]
         k += 1

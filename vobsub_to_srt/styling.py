@@ -65,11 +65,27 @@ def render_styled(chars: list[tuple[str, str]]) -> str:
 
 def inherit_punct_styles(words: list[tuple[str, str]]) -> list[str]:
     """Word styles where a word without letters or digits (a dash, quotes, an ellipsis) takes the
-    style of the next word with letters, else the previous one. Punctuation has no slant or
+    style of the next word with letters, else the previous one; a word with a single letter or
+    digit follows its neighbours (see below). Punctuation has no slant or
     stroke of its own: its glyph looks the same in an italic and an upright line, so its own
     style votes only reflect which kind of line is more common in the file."""
     styles = [s for _, s in words]
-    lettered = [any(c.isalnum() for c in t) for t, _ in words]
+    alnum = [sum(c.isalnum() for c in t) for t, _ in words]
+    # A word with a single letter or digit ("6.", "Y...", "4.") carries the slant evidence of one
+    # glyph, which a stored cluster's style can get wrong: it follows the neighbouring words with
+    # at least two letters when they agree (or when there is only one), else keeps its own.
+    strong = [n >= 2 for n in alnum]
+    for k, n in enumerate(alnum):
+        if n != 1:
+            continue
+        nxt = next((styles[j] for j in range(k + 1, len(words)) if strong[j]), None)
+        prv = next((styles[j] for j in range(k - 1, -1, -1) if strong[j]), None)
+        if nxt is not None and prv is not None:
+            if nxt == prv:
+                styles[k] = nxt
+        elif nxt is not None or prv is not None:
+            styles[k] = nxt if nxt is not None else prv
+    lettered = [n > 0 for n in alnum]
     for k, ok in enumerate(lettered):
         if ok:
             continue
@@ -78,6 +94,14 @@ def inherit_punct_styles(words: list[tuple[str, str]]) -> list[str]:
         if nxt is not None or prv is not None:
             styles[k] = nxt if nxt is not None else prv
     return styles
+
+
+def word_style(chars: list[tuple[str, str]]) -> str:
+    """Majority style of a word's characters. Punctuation has no slant of its own (see
+    inherit_punct_styles), so in a word with letters or digits only those vote: the period of an
+    italic "6." is drawn alike in both kinds of line and must not outvote the digit."""
+    lettered = [st for c, st in chars if c.isalnum()]
+    return majority_style(lettered if lettered else [st for _, st in chars])
 
 
 def majority_style(styles: list[str]) -> str:

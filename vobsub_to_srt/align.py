@@ -9,7 +9,7 @@ import numpy as np
 from .glyphdb import GlyphDB, trusted_label
 from .recognize import AMBIG_IL, _decide, confirmed, confusable
 from .segment import Line
-from .styling import inherit_punct_styles, STYLE_ORDER, majority_style, parse_styled, render_styled  # noqa: F401
+from .styling import inherit_punct_styles, STYLE_ORDER, majority_style, parse_styled, render_styled, word_style  # noqa: F401
 
 INF = float("inf")
 _TAG = re.compile(r"</?\s*([a-zA-Z]+)[^>]*>")
@@ -545,7 +545,7 @@ def restyle(lines: list[Line], aligns: list[Alignment], style_of, lexicon=None) 
             for w in words:
                 _lexicon_word(w, lexicon, corrections)
         texts = ["".join(text for _, text, _ in w) for w in words]
-        wstyles = inherit_punct_styles([(txt, majority_style([st_ for _, text, st_ in w for _ in text]))
+        wstyles = inherit_punct_styles([(txt, word_style([(c, st_) for _, text, st_ in w for c in text]))
                                         for txt, w in zip(texts, words)])
         chars: list[tuple[str, str]] = []
         for k, (txt, st) in enumerate(zip(texts, wstyles)):

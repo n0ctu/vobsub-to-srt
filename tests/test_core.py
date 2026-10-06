@@ -1011,3 +1011,18 @@ def test_only_letters_and_digits_have_a_slant():
     from vobsub_to_srt.recognize import _has_slant
     assert _has_slant("e") and _has_slant("8") and _has_slant("rt")
     assert not _has_slant("#") and not _has_slant('"') and not _has_slant("-") and not _has_slant(None)
+
+
+def test_punctuation_does_not_vote_on_a_word_style():
+    from vobsub_to_srt.styling import word_style
+    assert word_style([("6", "i"), (".", "")]) == "i"              # italic "6." in an italic line
+    assert word_style([("a", ""), ("b", "i"), ("c", "")]) == ""
+    assert word_style([("-", "i"), ("-", "i")]) == "i"              # no letters: all characters vote
+
+
+def test_a_one_letter_word_follows_its_neighbours_style():
+    from vobsub_to_srt.styling import inherit_punct_styles as ips
+    assert ips([("Station", ""), ("Y...", "i")]) == ["", ""]                          # upright line
+    assert ips([("Deck", "i"), ("5.", ""), ("Crewman", "i")]) == ["i", "i", "i"]
+    assert ips([("Why", "i"), ("I", ""), ("did", "")]) == ["i", "", ""]                # neighbours differ: own
+    assert ips([("Y...", "i")]) == ["i"]                                              # alone: own
