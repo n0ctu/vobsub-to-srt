@@ -452,6 +452,24 @@ def segment(mask: np.ndarray, bridge: np.ndarray | None = None) -> list[Line]:
     return lines
 
 
+def _baseline(bottoms: list[int]) -> int:
+    """The most common glyph bottom (ignores ' - ^ and descenders). On a rescaled track the
+    baseline jitters over two adjacent rows; in a short line with descenders ("[Dog barking]": two
+    brackets, two g) the descender bottoms then outnumber either baseline row and every letter
+    sat nine pixels above the "baseline". So bottoms within one pixel count together, and a
+    better-supported window ABOVE the plain mode wins (its most common row). Never below: there
+    the rows are descenders of different depth (a bracket ends a pixel below a g), which a
+    window would wrongly add up against a crisp baseline."""
+    vals, counts = np.unique(bottoms, return_counts=True)
+    mode_i = int(np.argmax(counts))
+    win = np.array([counts[np.abs(vals - v) <= 1].sum() for v in vals])
+    best = int(np.argmax(win))                   # first maximum: the upper window on a tie
+    if win[best] <= win[mode_i] or vals[best] >= vals[mode_i]:
+        return int(vals[mode_i])
+    near = np.abs(vals - vals[best]) <= 1
+    return int(vals[near][np.argmax(counts[near])])
+
+
 def _make_line(mask: np.ndarray, bridge: np.ndarray | None, lab: np.ndarray, boxes: list[list[int]],
                by0: int, y0: int, y1: int, underlines: list[tuple[int, int]]) -> Line:
     """One text line from merged boxes of the band starting at row by0."""
@@ -463,10 +481,7 @@ def _make_line(mask: np.ndarray, bridge: np.ndarray | None, lab: np.ndarray, box
         g.key = glyph_key(sub)
         line.glyphs.append(g)
     line.glyphs.sort(key=lambda g: g.x)
-    bottoms = [g.y + g.h for g in line.glyphs]
-    vals, counts = np.unique(bottoms, return_counts=True)
-    # baseline: most common bottom among the lower half of glyph bottoms (ignores ' - ^ etc.)
-    line.baseline = int(vals[np.argmax(counts)])
+    line.baseline = _baseline([g.y + g.h for g in line.glyphs])
     for g in line.glyphs:
         g.top_rel = g.y - line.baseline
     line.gaps = [b.x - a.right for a, b in zip(line.glyphs, line.glyphs[1:])]

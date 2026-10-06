@@ -863,10 +863,22 @@ class GlyphDB:
                 L[b] = sm / n
         r_def = float(np.median(list(R.values())))
         l_def = float(np.median(list(L.values())))
+        seen_r: Counter = Counter()
+        seen_l: Counter = Counter()
+        for a, b, g, c in letters:
+            seen_r[a] += c
+            seen_l[b] += c
         res = []
         for a, b, g, c in spaces:
             res += [g - (R.get(a, r_def) + L.get(b, l_def))] * c
         space_off = float(np.median(res))
+        # A bearing resting on a single letter pair may move away from the default by less than half
+        # a space: one observation may stem from a misaligned answer (the model wrote "♪♪" for
+        # "♪ ♪" once, every jittered ♪ joined that cluster, and each later "♪ ♪" lost its space).
+        for a in [a for a, v in R.items() if seen_r[a] < 2 and abs(v - r_def) > space_off / 2]:
+            del R[a]
+        for b in [b for b, v in L.items() if seen_l[b] < 2 and abs(v - l_def) > space_off / 2]:
+            del L[b]
         # Letters that rarely follow (or precede) another letter inside a word have no bearing from
         # the letter pairs: in English a 'j' almost always starts a word. Its hook reaches left
         # under the previous letter, so the default bearing is off by pixels and every "is just"

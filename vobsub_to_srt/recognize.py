@@ -187,6 +187,17 @@ TOLERANT_MIN_H = 8        # glyph height (px) below which the edge-tolerant stag
 TOLERANT_MIN_INK = 25     # ... and minimum ink pixels
 
 
+def _has_slant(label: str | None) -> bool:
+    """Only letters and digits have a slant or stroke weight of their own. Punctuation and symbols
+    (# - " ...) look the same in an italic and an upright line; their style is inherited from the
+    neighbouring words (styling.inherit_punct_styles), so their word geometry decides nothing."""
+    return bool(label) and any(c.isalnum() for c in label)
+
+
+STRICT_TOLERANT_TOL = 0.02   # edge-tolerant difference at which a strict letter is read in stage 2
+SAME_HEIGHT = set("Il|i1!jíìïî")   # letters whose look-alikes may differ by one pixel row
+
+
 def _geo_disagree(file_votes: list | None, cluster_votes: list) -> bool:
     """Both the glyph's word geometry in this file and the cluster have an opinion, and they differ."""
     if not file_votes or file_votes[0] == file_votes[1] or cluster_votes[0] == cluster_votes[1]:
@@ -243,7 +254,7 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
                         return canon, v, d              # the font's I/l cluster: the word decides
                     return None, None, d                # unconfirmed cluster: wait for the VLM
                 # identical stable pixels outweigh a word-slant vote; otherwise slant/weight must agree
-                if px > 1 and (_geo_disagree(fi, v.geo_italic) or _geo_disagree(fb, v.geo_bold)):
+                if px > 1 and _has_slant(label) and (_geo_disagree(fi, v.geo_italic) or _geo_disagree(fb, v.geo_bold)):
                     return None, None, d
                 other = next((c for c in ordered if c[3] != label and not (c[3] in AMBIG_IL and label in AMBIG_IL)), None)
                 if other is not None and other[0] - d < PROTO_MARGIN:
@@ -265,10 +276,15 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
         fb = db.file_geo[1].get(g.key)
         topo = topology(g.key, g.bits)
         ordered = []
+        every = []          # all candidates, whatever their topology (rivals of a strict letter)
         for r, key, dh in db.tolerant_candidates(g.bits):
             v = db.lookup(key, g.top_rel)
-            if v is not None and topology(key, db.shapes[key].bits) == topo:
-                ordered.append((r, key, v, _decide(v, db)[0], dh))
+            if v is None:
+                continue
+            c = (r, key, v, _decide(v, db)[0], dh)
+            every.append(c)
+            if topology(key, db.shapes[key].bits) == topo:
+                ordered.append(c)
         for r, key, v, label, dh in ordered:
             if label is None and confusable(voted_labels(v.votes) | ({"I", "l"} if db.il_identical else set())):
                 # joining the font's I/l cluster: the word decides the letter anyway. One pixel of
@@ -289,11 +305,22 @@ def near_match(db: GlyphDB, g: Glyph) -> tuple[str | None, Variant | None, float
                     continue
                 return None, None, r
             if is_strict(label):
-                return None, None, r
+                # digits, g, j, ! and the I/l family blur into each other on a jittered track. Read
+                # one only when it is all but identical up to edge jitter, the set has learned a
+                # look-alike (so the absence of a rival means something), nothing within the
+                # stage's tolerance reads differently, and - for letters told apart by one pixel
+                # row (l vs I, i vs j) - at the same height. Rivals of any topology count: jitter
+                # can close the gap of a 6, which then has the 8's two holes and matched an 8 at
+                # 0.017 while the 6 clusters sat at 0.0.
+                rival = next((c for c in every if c[3] != label and (c[3] is not None or
+                              {k for k, n in c[2].votes.items() if n > 0} - {label})), None)
+                if (r > STRICT_TOLERANT_TOL or rival is not None or (dh and set(label) & SAME_HEIGHT)
+                        or not db.lookalike_known(label, g.h)):
+                    return None, None, r
             # one pixel of tolerance hides a slant (an italic 0 matched the upright 0 cluster at
             # 0.02): slant and weight must agree with the glyph's word geometry, whatever its size.
             # Glyphs identical to a prototype on stable pixels are read by stage 1b regardless.
-            if _geo_disagree(fi, v.geo_italic) or _geo_disagree(fb, v.geo_bold):
+            if _has_slant(label) and (_geo_disagree(fi, v.geo_italic) or _geo_disagree(fb, v.geo_bold)):
                 return None, None, r
             # a runner-up with a different confirmed label too close: ambiguous. Unconfirmed
             # clusters whose single reading is this label (or none) are twins, not rivals.

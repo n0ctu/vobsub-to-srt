@@ -977,3 +977,19 @@ def test_seed_installs_and_replaces_by_version(tmp_path):
     assert json.loads((data / "one.json").read_text())["seeded_from"] == "0.3.0"
     (data / "two.json").write_text(json.dumps({"name": "two", "shapes": []}))     # a set learned there: untouched
     assert seed(base, data, version="0.3.0") == [] and (data / "two.json").exists()
+
+
+def test_baseline_counts_jittered_rows_together_but_never_moves_down():
+    from vobsub_to_srt.segment import _baseline
+    # "[Dog barking]" on a rescaled track: letters end at rows 91/92 (jitter), brackets and g at 100
+    assert _baseline([100, 91, 92, 100, 100, 92, 91, 92, 91, 91, 100, 100]) == 91   # the real line
+    assert _baseline([100, 91, 92, 100, 100, 92, 91, 100, 92, 91, 100, 100]) == 100  # a tie keeps the mode
+    # crisp line with many descenders: brackets end one row below g/p; the baseline stays at 44
+    assert _baseline([57, 44, 44, 56, 56, 44, 44, 56, 57]) == 44
+    assert _baseline([30, 30, 30, 41]) == 30                     # ordinary line: the plain mode
+
+
+def test_only_letters_and_digits_have_a_slant():
+    from vobsub_to_srt.recognize import _has_slant
+    assert _has_slant("e") and _has_slant("8") and _has_slant("rt")
+    assert not _has_slant("#") and not _has_slant('"') and not _has_slant("-") and not _has_slant(None)
