@@ -979,6 +979,24 @@ def test_seed_installs_and_replaces_by_version(tmp_path):
     assert seed(base, data, version="0.3.0") == [] and (data / "two.json").exists()
 
 
+def test_seed_retires_a_shipped_set_the_image_no_longer_ships(tmp_path):
+    import json
+    from vobsub_to_srt.seed import seed
+    base, data, wm = tmp_path / "base", tmp_path / "data", tmp_path / "wm"
+    base.mkdir(); wm.mkdir()
+    for n in ("keep", "merged"):
+        (base / f"{n}.json").write_text(json.dumps({"name": n, "shapes": []}))
+    seed(base, data, version="0.2.2", private=wm)
+    (data / "local.json").write_text(json.dumps({"name": "local", "shapes": []}))   # learned on the instance
+    (wm / "merged.json").write_text(json.dumps({"interim": {"shapes": []}}))
+    (base / "merged.json").unlink()                                                   # 0.3.0 merged it away
+    notes = seed(base, data, version="0.3.0", private=wm)
+    assert "merged.json: retired (no longer shipped; seeded from 0.2.2; archived)" in notes
+    assert not (data / "merged.json").exists() and (data / "superseded" / "merged.0.2.2.json").exists()
+    assert not (wm / "merged.json").exists() and (wm / "superseded" / "merged.0.2.2.json").exists()
+    assert (data / "local.json").exists() and (data / "keep.json").exists()
+
+
 def test_baseline_counts_jittered_rows_together_but_never_moves_down():
     from vobsub_to_srt.segment import _baseline
     # "[Dog barking]" on a rescaled track: letters end at rows 91/92 (jitter), brackets and g at 100

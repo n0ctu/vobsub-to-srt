@@ -6,7 +6,13 @@ version in the name, so what the instance learned in between can still be harves
 (tools/memory_import.py) and merged as a delta against the version it started from. Copies with
 no `seeded_from` at all (from before 0.2.1) are treated like an older version.
 
-usage: python -m vobsub_to_srt.seed BASELINE_DIR DATA_GLYPH_DIR
+A set an earlier image shipped (it carries `seeded_from`) that this image no longer ships - merged
+into another set, or dropped - is archived the same way, with its private sidecar (interim
+learning, learned image hashes) when a word-memory dir is given: left in place, a font split over
+two sets keeps the comparison flipping between them. Sets learned on the instance itself carry no
+`seeded_from` and stay.
+
+usage: python -m vobsub_to_srt.seed BASELINE_DIR DATA_GLYPH_DIR [DATA_WORD_MEMORY_DIR]
 """
 from __future__ import annotations
 
@@ -18,10 +24,28 @@ from pathlib import Path
 from .version import app_version
 
 
-def seed(baseline: Path, target: Path, version: str | None = None) -> list[str]:
+def seed(baseline: Path, target: Path, version: str | None = None, private: Path | None = None) -> list[str]:
     version = version or app_version()
     target.mkdir(parents=True, exist_ok=True)
     notes: list[str] = []
+    shipped = {src.name for src in baseline.glob("*.json")}
+    for dst in sorted(target.glob("*.json")):
+        if dst.name in shipped:
+            continue
+        try:
+            have = json.loads(dst.read_text(encoding="utf-8")).get("seeded_from")
+        except (OSError, ValueError):
+            continue
+        if not have:
+            continue                      # learned on this instance: not ours to retire
+        archive = target / "superseded"
+        archive.mkdir(exist_ok=True)
+        shutil.move(str(dst), str(archive / f"{dst.stem}.{have}.json"))
+        side = private / dst.name if private is not None else None
+        if side is not None and side.exists():
+            (private / "superseded").mkdir(exist_ok=True)
+            shutil.move(str(side), str(private / "superseded" / f"{dst.stem}.{have}.json"))
+        notes.append(f"{dst.name}: retired (no longer shipped; seeded from {have}; archived)")
     for src in sorted(baseline.glob("*.json")):
         dst = target / src.name
         if dst.exists():
@@ -44,7 +68,7 @@ def seed(baseline: Path, target: Path, version: str | None = None) -> list[str]:
 
 
 def main() -> None:
-    for n in seed(Path(sys.argv[1]), Path(sys.argv[2])):
+    for n in seed(Path(sys.argv[1]), Path(sys.argv[2]), private=Path(sys.argv[3]) if len(sys.argv) > 3 else None):
         print("seed:", n)
 
 

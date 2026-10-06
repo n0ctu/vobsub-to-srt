@@ -116,7 +116,7 @@ mkdir -p data/in && cp .env.example .env                      # endpoint optiona
 docker compose --profile cli run --rm vobsub-to-srt /data/in/movie.idx   # -> data/out/movie.srt
 ```
 
-The image `ghcr.io/n0ctu/vobsub-to-srt:latest` is built by CI from `main` (tags `vX.Y.Z` from releases). All state lives in the `data/` volume: `glyph-memory/` is seeded from the image's baseline on first start and grows from there, `word-memory/` and `dictionaries/` next to it (`out/` for CLI results). `compose.yml` includes Watchtower, which pulls a new `:latest` and replaces the container automatically.
+The image `ghcr.io/n0ctu/vobsub-to-srt:latest` is built by CI from `main` (tags `vX.Y.Z` from releases). All state lives in the `data/` volume: `glyph-memory/` is seeded from the image's baseline on first start and grows from there; a newer image replaces its shipped sets (the old copies, and shipped sets the new image no longer ships, go to `superseded/` with their sidecars) while sets learned on the instance stay. `word-memory/` and `dictionaries/` live next to it (`out/` for CLI results). `compose.yml` includes Watchtower, which pulls a new `:latest` and replaces the container automatically.
 
 ## Web app (self-hosting)
 
